@@ -161,3 +161,38 @@ O `users-api` cria um administrador na inicialização:
 
 - **E-mail:** `admin@fcg.com`
 - **Senha:** `Admin@123456`
+
+## Como contribuir
+
+O fluxo vale para este repo e para os 4 repos de serviço:
+
+1. **Pegue uma issue** no repositório correspondente e atribua a si mesmo (`assignee`).
+2. **Crie um branch** a partir da `main`: `feat/<numero>-descricao-curta` ou `fix/<numero>-descricao-curta`.
+3. **Commits** no padrão [Conventional Commits](https://www.conventionalcommits.org) (`feat:`, `fix:`, `chore:`, `test:`, `docs:`). Mensagens em pt-BR para domínio, inglês para termos técnicos.
+4. **Abra um PR** para a `main` referenciando a issue (`Closes #<numero>`). O CI (build + testes) precisa passar.
+5. **Merge** após review. Nunca commite segredos reais (use ConfigMaps/Secrets e variáveis de ambiente).
+
+Política de idioma: conteúdo de usuário e domínio em **pt-BR**; namespaces, métodos e infraestrutura em **inglês**.
+
+## Versionamento e release de imagens
+
+Cada serviço versiona por **SemVer** via tag git `vX.Y.Z` no seu próprio repositório. Fluxo de release de uma versão:
+
+```bash
+# 1. No repo do serviço, com a main estável:
+git tag v1.0.0 && git push origin v1.0.0
+
+# 2. Build e publish da imagem no GitHub Container Registry (GHCR):
+gh auth token | docker login ghcr.io -u <seu-usuario> --password-stdin
+docker build -t ghcr.io/fcg-grupo-16/<servico>:v1.0.0 .
+docker push ghcr.io/fcg-grupo-16/<servico>:v1.0.0
+
+# 3. Atualize a imagem no cluster (neste repo, k8s/2x-<servico>.yaml, ou direto):
+kubectl set image deploy/<servico> <servico>=ghcr.io/fcg-grupo-16/<servico>:v1.0.0 -n fcg
+```
+
+Para o desenvolvimento local com minikube continuamos usando a tag `:local` (build + `minikube image load`), como descrito acima. A pipeline de build/push para o GHCR em cada tag pode ser adicionada como workflow (`release.yml`) em cada repo — está mapeada como melhoria nas issues.
+
+## Repositórios do grupo
+
+- [orchestration](https://github.com/fcg-grupo-16/orchestration) · [users-api](https://github.com/fcg-grupo-16/users-api) · [catalog-api](https://github.com/fcg-grupo-16/catalog-api) · [payments-api](https://github.com/fcg-grupo-16/payments-api) · [notifications-api](https://github.com/fcg-grupo-16/notifications-api)
