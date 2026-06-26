@@ -1,0 +1,84 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: users-api-config
+  namespace: fcg
+  labels:
+    app: users-api
+data:
+  ASPNETCORE_ENVIRONMENT: "Production"
+  RabbitMq__Host: "rabbitmq"
+  MongoDbSettings__DatabaseName: "usersdb"
+  JwtSettings__Issuer: "FiapCloudGames"
+  JwtSettings__Audience: "FiapCloudGames"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: users-api-secret
+  namespace: fcg
+  labels:
+    app: users-api
+type: Opaque
+stringData:
+  MongoDbSettings__ConnectionString: "mongodb://mongodb:27017"
+  # IMPORTANTE: esta chave DEVE ser idêntica à do catalog-api-secret.
+  JwtSettings__SecretKey: "FiapCloudGames_Demo_SecretKey_Com_Pelo_Menos_256_Bits_Para_HMAC_SHA256!"
+  RabbitMq__Username: "guest"
+  RabbitMq__Password: "guest"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: users-api
+  namespace: fcg
+  labels:
+    app: users-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: users-api
+  template:
+    metadata:
+      labels:
+        app: users-api
+    spec:
+      containers:
+        - name: users-api
+          image: users-api:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: users-api-config
+            - secretRef:
+                name: users-api-secret
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: users-api
+  namespace: fcg
+  labels:
+    app: users-api
+spec:
+  type: ClusterIP
+  selector:
+    app: users-api
+  ports:
+    - port: 80
+      targetPort: 8080

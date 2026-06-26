@@ -1,0 +1,136 @@
+# FIAP Cloud Games (FCG) — Fase 2
+# Orquestração completa da plataforma de microsserviços.
+#
+# Os serviços são construídos a partir dos repositórios IRMÃOS deste repo.
+# Estrutura esperada no diretório pai:
+#   fiap/
+#   ├── orchestration/   (este repo)
+#   ├── users-api/
+#   ├── catalog-api/
+#   ├── payments-api/
+#   └── notifications-api/
+#
+# Subir tudo:   docker compose up --build
+# Derrubar:     docker compose down -v
+
+name: fcg
+
+x-jwt-secret: &jwt-secret "FiapCloudGames_Demo_SecretKey_Com_Pelo_Menos_256_Bits_Para_HMAC_SHA256!"
+
+services:
+  # ---------------- Infraestrutura ----------------
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    container_name: fcg-rabbitmq
+    ports:
+      - "5672:5672"     # AMQP
+      - "15672:15672"   # Management UI (guest/guest)
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    restart: unless-stopped
+
+  mongodb:
+    image: mongo:7
+    container_name: fcg-mongodb
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  # ---------------- Microsserviços ----------------
+  users-api:
+    build:
+      context: ../users-api
+    image: users-api:local
+    container_name: fcg-users-api
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      MongoDbSettings__ConnectionString: "mongodb://mongodb:27017"
+      MongoDbSettings__DatabaseName: "usersdb"
+      JwtSettings__SecretKey: *jwt-secret
+      JwtSettings__Issuer: "FiapCloudGames"
+      JwtSettings__Audience: "FiapCloudGames"
+      RabbitMq__Host: "rabbitmq"
+      RabbitMq__Username: "guest"
+      RabbitMq__Password: "guest"
+    ports:
+      - "8081:8080"
+    restart: unless-stopped
+
+  catalog-api:
+    build:
+      context: ../catalog-api
+    image: catalog-api:local
+    container_name: fcg-catalog-api
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      MongoDbSettings__ConnectionString: "mongodb://mongodb:27017"
+      MongoDbSettings__DatabaseName: "catalogdb"
+      JwtSettings__SecretKey: *jwt-secret   # DEVE ser idêntica à do users-api
+      JwtSettings__Issuer: "FiapCloudGames"
+      JwtSettings__Audience: "FiapCloudGames"
+      RabbitMq__Host: "rabbitmq"
+      RabbitMq__Username: "guest"
+      RabbitMq__Password: "guest"
+    ports:
+      - "8082:8080"
+    restart: unless-stopped
+
+  payments-api:
+    build:
+      context: ../payments-api
+    image: payments-api:local
+    container_name: fcg-payments-api
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      RabbitMq__Host: "rabbitmq"
+      RabbitMq__Username: "guest"
+      RabbitMq__Password: "guest"
+      Payments__MaxApprovedAmount: "5000"
+    ports:
+      - "8083:8080"
+    restart: unless-stopped
+
+  notifications-api:
+    build:
+      context: ../notifications-api
+    image: notifications-api:local
+    container_name: fcg-notifications-api
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      RabbitMq__Host: "rabbitmq"
+      RabbitMq__Username: "guest"
+      RabbitMq__Password: "guest"
+    ports:
+      - "8084:8080"
+    restart: unless-stopped
+
+volumes:
+  mongo-data:

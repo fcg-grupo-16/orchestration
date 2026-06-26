@@ -1,0 +1,78 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: notifications-api-config
+  namespace: fcg
+  labels:
+    app: notifications-api
+data:
+  ASPNETCORE_ENVIRONMENT: "Production"
+  RabbitMq__Host: "rabbitmq"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: notifications-api-secret
+  namespace: fcg
+  labels:
+    app: notifications-api
+type: Opaque
+stringData:
+  RabbitMq__Username: "guest"
+  RabbitMq__Password: "guest"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notifications-api
+  namespace: fcg
+  labels:
+    app: notifications-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: notifications-api
+  template:
+    metadata:
+      labels:
+        app: notifications-api
+    spec:
+      containers:
+        - name: notifications-api
+          image: notifications-api:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: notifications-api-config
+            - secretRef:
+                name: notifications-api-secret
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: notifications-api
+  namespace: fcg
+  labels:
+    app: notifications-api
+spec:
+  type: ClusterIP
+  selector:
+    app: notifications-api
+  ports:
+    - port: 80
+      targetPort: 8080

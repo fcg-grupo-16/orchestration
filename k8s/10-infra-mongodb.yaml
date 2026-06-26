@@ -1,0 +1,49 @@
+# MongoDB — banco compartilhado (databases separados por serviço: usersdb, catalogdb).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mongodb
+  namespace: fcg
+  labels:
+    app: mongodb
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mongodb
+  template:
+    metadata:
+      labels:
+        app: mongodb
+    spec:
+      containers:
+        - name: mongodb
+          image: mongo:7
+          ports:
+            - containerPort: 27017
+          volumeMounts:
+            - name: mongo-data
+              mountPath: /data/db
+          livenessProbe:
+            exec:
+              command: ["mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+            initialDelaySeconds: 15
+            periodSeconds: 15
+      volumes:
+        - name: mongo-data
+          emptyDir: {}   # demo: dados não persistem entre recriações do Pod
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongodb
+  namespace: fcg
+  labels:
+    app: mongodb
+spec:
+  type: ClusterIP
+  selector:
+    app: mongodb
+  ports:
+    - port: 27017
+      targetPort: 27017
