@@ -36,12 +36,20 @@ services:
   mongodb:
     image: mongo:7
     container_name: fcg-mongodb
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
     ports:
       - "27017:27017"
     volumes:
       - mongo-data:/data/db
     healthcheck:
-      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      test:
+        [
+          "CMD",
+          "mongosh",
+          "--quiet",
+          "--eval",
+          "try { rs.status().ok } catch (err) { rs.initiate({_id: 'rs0', members: [{ _id: 0, host: 'mongodb:27017' }] }).ok }"
+        ]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -61,7 +69,7 @@ services:
         condition: service_healthy
     environment:
       ASPNETCORE_ENVIRONMENT: Production
-      MongoDbSettings__ConnectionString: "mongodb://mongodb:27017"
+      MongoDbSettings__ConnectionString: "mongodb://mongodb:27017/?replicaSet=rs0"
       MongoDbSettings__DatabaseName: "usersdb"
       JwtSettings__SecretKey: *jwt-secret
       JwtSettings__Issuer: "FiapCloudGames"
@@ -85,7 +93,7 @@ services:
         condition: service_healthy
     environment:
       ASPNETCORE_ENVIRONMENT: Production
-      MongoDbSettings__ConnectionString: "mongodb://mongodb:27017"
+      MongoDbSettings__ConnectionString: "mongodb://mongodb:27017/?replicaSet=rs0"
       MongoDbSettings__DatabaseName: "catalogdb"
       JwtSettings__SecretKey: *jwt-secret   # DEVE ser idêntica à do users-api
       JwtSettings__Issuer: "FiapCloudGames"
