@@ -11,7 +11,7 @@ metadata:
   labels:
     app: mongodb
 spec:
-  serviceName: mongodb          # precisa casar com o nome do Service headless/ClusterIP
+  serviceName: mongodb          # casa com o nome do Service ClusterIP abaixo; com 1 réplica não exigimos DNS por-Pod (Service headless)
   replicas: 1
   selector:
     matchLabels:

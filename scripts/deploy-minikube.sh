@@ -29,7 +29,7 @@ kubectl -n fcg delete deployment mongodb --ignore-not-found
 echo "==> Aplicando manifestos (kubectl apply -R -f k8s/)"
 kubectl apply -R -f "$ROOT_DIR/k8s/"
 
-echo "==> Aguardando os Deployments ficarem prontos"
+echo "==> Aguardando infra (RabbitMQ Deployment, MongoDB StatefulSet) e microsserviços ficarem prontos"
 kubectl -n fcg rollout status deploy/rabbitmq --timeout=180s
 kubectl -n fcg rollout status statefulset/mongodb --timeout=180s
 for svc in "${SERVICES[@]}"; do

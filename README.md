@@ -115,6 +115,12 @@ MongoDB, `Deployment`+`Service` do RabbitMQ) e, para cada microsserviço, `Confi
 > `mongodb` (ClusterIP 27017) é o mesmo, então as APIs seguem conectando por
 > `mongodb://mongodb:27017` sem mudança de config. Confira o PVC com `kubectl -n fcg get pvc`
 > (STATUS `Bound`).
+>
+> **Atenção — paridade com o compose ainda incompleta:** diferente do `docker-compose.yml`, os
+> manifestos k8s **ainda não** configuram o replica set `rs0` (o Mongo sobe sem `--replSet rs0` e as
+> connection strings dos Secrets não têm `?replicaSet=rs0`). Como o outbox transacional da `users-api`
+> exige replica set, o fluxo de cadastro **não** é equivalente ao do compose no cluster hoje. Esta issue
+> trata apenas de **persistência**; o replica set no k8s é tratado em issue separada.
 
 ### Forma rápida (script)
 
