@@ -112,15 +112,17 @@ MongoDB, `Deployment`+`Service` do RabbitMQ) e, para cada microsserviço, `Confi
 > que provisiona um `PersistentVolumeClaim` (`mongo-data-mongodb-0`, `storageClassName: standard`
 > — a StorageClass padrão do minikube). O volume **sobrevive** à recriação do Pod (rollout,
 > `kubectl delete pod`, reagendamento), então `usersdb`/`catalogdb` não são perdidos. O Service
-> `mongodb` (ClusterIP 27017) é o mesmo, então as APIs seguem conectando por
-> `mongodb://mongodb:27017` sem mudança de config. Confira o PVC com `kubectl -n fcg get pvc`
-> (STATUS `Bound`).
+> `mongodb` (headless, porta 27017) mantém o mesmo DNS interno, então as APIs seguem conectando por
+> `mongodb://mongodb:27017/?replicaSet=rs0` sem mudança de config. Confira o PVC com
+> `kubectl -n fcg get pvc` (STATUS `Bound`).
 >
-> **Atenção — paridade com o compose ainda incompleta:** diferente do `docker-compose.yml`, os
-> manifestos k8s **ainda não** configuram o replica set `rs0` (o Mongo sobe sem `--replSet rs0` e as
-> connection strings dos Secrets não têm `?replicaSet=rs0`). Como o outbox transacional da `users-api`
-> exige replica set, o fluxo de cadastro **não** é equivalente ao do compose no cluster hoje. Esta issue
-> trata apenas de **persistência**; o replica set no k8s é tratado em issue separada.
+> **Replica set `rs0` (paridade com o compose).** Assim como no `docker-compose.yml`, o Mongo no
+> k8s roda como **single-node replica set** — o container sobe com `mongod --replSet rs0` e a
+> `readinessProbe` inicia o RS de forma idempotente (mesmo `rs.initiate(...)` do healthcheck do
+> compose), só marcando o Pod `Ready` após o RS estar de pé. As connection strings dos Secrets de
+> `users-api` e `catalog-api` usam `?replicaSet=rs0`. Isso é **exigido pelo outbox transacional**
+> (transações multi-documento do Mongo requerem replica set), então o fluxo de cadastro funciona no
+> cluster igual ao compose. Confira com `kubectl -n fcg exec mongodb-0 -- mongosh --quiet --eval 'rs.status().ok'`.
 
 ### Forma rápida (script)
 
