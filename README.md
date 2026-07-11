@@ -103,10 +103,18 @@ docker compose down -v
 
 ## Deploy no Kubernetes (local)
 
-Os manifestos estão em [`k8s/`](k8s/): `Namespace`, infra (`Deployment`+`Service` de
-MongoDB e RabbitMQ) e, para cada microsserviço, `ConfigMap` (config não sensível),
-`Secret` (connection strings, chave JWT, credenciais), `Deployment` e `Service`
-(ClusterIP, porta 80 → 8080).
+Os manifestos estão em [`k8s/`](k8s/): `Namespace`, infra (`StatefulSet`+`Service` do
+MongoDB, `Deployment`+`Service` do RabbitMQ) e, para cada microsserviço, `ConfigMap`
+(config não sensível), `Secret` (connection strings, chave JWT, credenciais),
+`Deployment` e `Service` (ClusterIP, porta 80 → 8080).
+
+> **Persistência do MongoDB.** O Mongo roda como `StatefulSet` com `volumeClaimTemplates`,
+> que provisiona um `PersistentVolumeClaim` (`mongo-data-mongodb-0`, `storageClassName: standard`
+> — a StorageClass padrão do minikube). O volume **sobrevive** à recriação do Pod (rollout,
+> `kubectl delete pod`, reagendamento), então `usersdb`/`catalogdb` não são perdidos. O Service
+> `mongodb` (ClusterIP 27017) é o mesmo, então as APIs seguem conectando por
+> `mongodb://mongodb:27017` sem mudança de config. Confira o PVC com `kubectl -n fcg get pvc`
+> (STATUS `Bound`).
 
 ### Forma rápida (script)
 
@@ -150,6 +158,10 @@ Remover:
 ```bash
 ./scripts/undeploy-minikube.sh   # ou: kubectl delete -R -f k8s/
 ```
+
+> O `PersistentVolumeClaim` gerado pelo `volumeClaimTemplates` **não** é removido por
+> `kubectl delete -R -f k8s/` — os dados ficam para trás de propósito. Para zerar de vez
+> num ambiente de demo: `kubectl -n fcg delete pvc mongo-data-mongodb-0`.
 
 ## Configuração e segredos
 
