@@ -5,6 +5,32 @@ Todas as mudanças relevantes deste repositório de orquestração são document
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/)
 e o versionamento adere a [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [0.3.0] - 2026-07-11
+
+### Adicionado
+- MongoDB no Kubernetes agora roda como **single-node replica set (`rs0`)**, fechando a lacuna de
+  paridade dev/prod com o `docker-compose.yml`. É pré-requisito do **outbox transacional** das APIs
+  (transações multi-documento do Mongo exigem replica set) — sem isso, o cadastro de usuário
+  funcionava no compose mas **quebrava** no cluster.
+- `readinessProbe` no MongoDB que **inicia o replica set de forma idempotente** (mesmo `rs.initiate(...)`
+  do healthcheck do compose) e só marca o Pod `Ready` quando o nó é **PRIMARY gravável**
+  (`db.hello().isWritablePrimary`), evitando tráfego antes de o Mongo aceitar transações.
+
+### Modificado
+- `k8s/10-infra-mongodb.yaml`: o container sobe com `args: ["mongod", "--replSet", "rs0", "--bind_ip_all"]`
+  — via `args` (não `command`) para **preservar o ENTRYPOINT** `docker-entrypoint.sh` da imagem
+  (invocação byte-equivalente ao compose). O `Service` `mongodb` passou a **headless**
+  (`clusterIP: None` + `publishNotReadyAddresses: true`) para dar DNS próprio ao Pod e permitir o
+  `rs.initiate` antes de o Pod ficar `Ready`. O DNS interno e a porta 27017 são os mesmos.
+- `k8s/20-users-api.yaml` e `k8s/21-catalog-api.yaml`: connection strings dos Secrets passam a usar
+  `?replicaSet=rs0`.
+- `README.md`: documenta o replica set `rs0` no k8s (paridade com o compose agora completa).
+
+### Nota de migração
+- Trocar o `Service` `mongodb` de `ClusterIP` para headless é uma mudança de campo **imutável**: em um
+  cluster que já tenha o Service antigo, rode `kubectl delete svc mongodb` uma vez antes do `apply`
+  (clusters novos criam headless direto).
+
 ## [0.2.0] - 2026-07-11
 
 ### Adicionado
@@ -29,4 +55,5 @@ e o versionamento adere a [Semantic Versioning](https://semver.org/lang/pt-BR/).
 ### Removido
 - Volume `emptyDir` do MongoDB no Kubernetes (causa da perda de dados entre recriações do Pod).
 
+[0.3.0]: https://github.com/fcg-grupo-16/orchestration/releases/tag/v0.3.0
 [0.2.0]: https://github.com/fcg-grupo-16/orchestration/releases/tag/v0.2.0
