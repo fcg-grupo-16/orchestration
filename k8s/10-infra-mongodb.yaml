@@ -29,7 +29,10 @@ spec:
       containers:
         - name: mongodb
           image: mongo:7
-          command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
+          # args (não command): preserva o ENTRYPOINT docker-entrypoint.sh da imagem e só
+          # substitui o CMD — invocação byte-equivalente ao docker-compose
+          # (docker-entrypoint.sh mongod --replSet rs0 --bind_ip_all).
+          args: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
           ports:
             - containerPort: 27017
           volumeMounts:
@@ -48,15 +51,17 @@ spec:
             initialDelaySeconds: 30
             periodSeconds: 15
             timeoutSeconds: 10
-          # Inicia o replica set rs0 de forma idempotente (espelha o healthcheck do compose):
-          # se já iniciado, rs.status().ok; senão, rs.initiate(...). O Pod só fica Ready após o RS de pé.
+          # Inicia o replica set rs0 de forma idempotente e só reporta Ready quando o nó já é
+          # PRIMARY gravável: se o RS não existe (rs.status() lança), dispara rs.initiate e falha
+          # (quit 1) para tentar de novo; se existe, quit 0 apenas quando db.hello().isWritablePrimary.
+          # Assim o Pod não entra nos endpoints antes de aceitar writes/transações.
           readinessProbe:
             exec:
               command:
                 - mongosh
                 - --quiet
                 - --eval
-                - "try { rs.status().ok } catch (err) { rs.initiate({_id: 'rs0', members: [{ _id: 0, host: 'mongodb:27017' }] }).ok }"
+                - "try { rs.status() } catch (e) { try { rs.initiate({_id: 'rs0', members: [{ _id: 0, host: 'mongodb:27017' }] }) } catch (e2) {}; quit(1) } quit(db.hello().isWritablePrimary ? 0 : 1)"
             initialDelaySeconds: 5
             periodSeconds: 10
             timeoutSeconds: 10
