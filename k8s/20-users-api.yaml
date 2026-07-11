@@ -21,7 +21,7 @@ metadata:
     app: users-api
 type: Opaque
 stringData:
-  MongoDbSettings__ConnectionString: "mongodb://mongodb:27017"
+  MongoDbSettings__ConnectionString: "mongodb://mongodb:27017/?replicaSet=rs0"
   # IMPORTANTE: esta chave DEVE ser idêntica à do catalog-api-secret.
   JwtSettings__SecretKey: "FiapCloudGames_Demo_SecretKey_Com_Pelo_Menos_256_Bits_Para_HMAC_SHA256!"
   RabbitMq__Username: "guest"

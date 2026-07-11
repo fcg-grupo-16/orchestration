@@ -1,8 +1,13 @@
 # MongoDB — banco compartilhado (databases separados por serviço: usersdb, catalogdb).
 # StatefulSet com armazenamento persistente: o volumeClaimTemplates gera um PVC
-# (mongo-data-mongodb-0) que SOBREVIVE à recriação do Pod. O Service ClusterIP
-# `mongodb` (abaixo) mantém o DNS interno, então as APIs seguem conectando por
-# mongodb://mongodb:27017 sem mudança de config.
+# (mongo-data-mongodb-0) que SOBREVIVE à recriação do Pod. O Service headless
+# `mongodb` (abaixo) dá DNS interno ao Pod, então as APIs conectam por
+# mongodb://mongodb:27017/?replicaSet=rs0.
+#
+# Roda como single-node replica set (rs0) — exigido pelo outbox transacional das APIs
+# (transações multi-documento do Mongo requerem replica set). O container sobe com
+# `mongod --replSet rs0` e a readinessProbe inicia o RS de forma idempotente (mesmo
+# eval do healthcheck do docker-compose), só marcando o Pod Ready após o RS estar de pé.
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -24,6 +29,7 @@ spec:
       containers:
         - name: mongodb
           image: mongo:7
+          command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
           ports:
             - containerPort: 27017
           volumeMounts:
@@ -39,8 +45,22 @@ spec:
           livenessProbe:
             exec:
               command: ["mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
-            initialDelaySeconds: 15
+            initialDelaySeconds: 30
             periodSeconds: 15
+            timeoutSeconds: 10
+          # Inicia o replica set rs0 de forma idempotente (espelha o healthcheck do compose):
+          # se já iniciado, rs.status().ok; senão, rs.initiate(...). O Pod só fica Ready após o RS de pé.
+          readinessProbe:
+            exec:
+              command:
+                - mongosh
+                - --quiet
+                - --eval
+                - "try { rs.status().ok } catch (err) { rs.initiate({_id: 'rs0', members: [{ _id: 0, host: 'mongodb:27017' }] }).ok }"
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 10
+            failureThreshold: 6
   volumeClaimTemplates:
     - metadata:
         name: mongo-data        # vira o nome base do PVC: mongo-data-mongodb-0
@@ -59,7 +79,13 @@ metadata:
   labels:
     app: mongodb
 spec:
-  type: ClusterIP
+  # Headless (clusterIP: None): o StatefulSet exige um Service headless para dar DNS
+  # próprio ao Pod (mongodb-0.mongodb) — aqui `mongodb` resolve direto para o IP do Pod.
+  # publishNotReadyAddresses: o DNS resolve mesmo com o Pod NotReady, o que quebra o
+  # deadlock de readiness no init do rs0 (a readinessProbe roda rs.initiate com host
+  # `mongodb:27017`, que precisa resolver para si mesmo ANTES de o Pod ficar Ready).
+  clusterIP: None
+  publishNotReadyAddresses: true
   selector:
     app: mongodb
   ports:
