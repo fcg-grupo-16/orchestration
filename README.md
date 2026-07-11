@@ -76,10 +76,17 @@ Sobe RabbitMQ, MongoDB e os 4 microsserviços. Portas expostas no host:
 | payments-api | http://localhost:8083 | (worker) |
 | notifications-api | http://localhost:8084 | (worker) |
 | RabbitMQ Management | http://localhost:15672 | guest / guest |
-| MongoDB | mongodb://localhost:27017 | — |
+| MongoDB | mongodb://localhost:27017/?replicaSet=rs0 | — |
 
 > Swagger só é exposto em ambiente Development. Para ativá-lo no compose, troque
 > `ASPNETCORE_ENVIRONMENT` para `Development` no serviço desejado.
+
+> **MongoDB roda como replica set (`rs0`).** O container sobe com `mongod --replSet rs0` e o
+> healthcheck do compose **auto-inicia** o replica set (`rs.initiate(...)`); por isso os serviços
+> conectam com `MongoDbSettings__ConnectionString=mongodb://mongodb:27017/?replicaSet=rs0`. O replica
+> set é **pré-requisito do outbox transacional da `users-api`** — transações multi-documento do
+> MongoDB exigem replica set. Ao editar o `docker-compose.yml`, **não** remova o `--replSet rs0` nem
+> o `?replicaSet=rs0` das connection strings, ou o cadastro de usuários passa a falhar.
 
 ### Testar os dois fluxos de ponta a ponta
 
