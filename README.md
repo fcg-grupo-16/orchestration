@@ -209,10 +209,11 @@ Todo **push na `main`** e **todo pull request** dispara o workflow
 > `connection refused`. O `kubeconform` faz a **mesma validação de schema, offline** e
 > mais rigorosa, contra os schemas oficiais do Kubernetes.
 >
-> O CI usa apenas `-f docker-compose.yml` porque o `docker-compose.override.yml` é
-> **gitignored** e não existe no runner. O `kubeconform` roda em versão **pinada**
-> (nunca `latest`) e o `-ignore-missing-schemas` evita falso-negativo em CRDs futuros
-> (ex.: `SealedSecret`).
+> O CI usa apenas `-f docker-compose.yml` para ser **determinístico**: valida só o
+> arquivo versionado, sem influência de um `docker-compose.override.yml` local
+> (gitignored) — o Compose só o carrega automaticamente se ele existir. O `kubeconform`
+> roda em versão **pinada** (nunca `latest`) e o `-ignore-missing-schemas` evita
+> falso-negativo em CRDs futuros (ex.: `SealedSecret`).
 
 Para reproduzir o CI localmente:
 

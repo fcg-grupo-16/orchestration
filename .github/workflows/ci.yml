@@ -40,8 +40,10 @@ jobs:
         uses: actions/checkout@v4
 
       # 1) docker-compose: parse + validação (não sobe nada).
-      #    -f explícito: o docker-compose.override.yml é gitignored e NÃO existe
-      #    no runner; sem -f, o Compose tentaria mesclar overrides inexistentes.
+      #    -f explícito torna a validação DETERMINÍSTICA: valida só o
+      #    docker-compose.yml versionado. O Compose carrega o docker-compose.override.yml
+      #    automaticamente apenas se ele existir (é gitignored); fixar -f garante que
+      #    um override local nunca influencie o resultado do CI.
       - name: Validar docker-compose
         run: docker compose -f docker-compose.yml config -q
 
