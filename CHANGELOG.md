@@ -16,6 +16,11 @@ e o versionamento adere a [Semantic Versioning](https://semver.org/lang/pt-BR/).
 ### Modificado
 - `docker-compose.yml`: o serviço `rabbitmq` passa a `build: ./docker/rabbitmq` + `image: fcg-rabbitmq:local`.
 - `k8s/11-infra-rabbitmq.yaml`: `image: fcg-rabbitmq:local` + `imagePullPolicy: IfNotPresent`.
+- **Hardening de memória do RabbitMQ** (evita `OOMKilled`): a imagem custom passa a definir
+  `vm_memory_high_watermark.absolute = 384MiB` (`docker/rabbitmq/rabbitmq.conf`) para o broker
+  aplicar flow control antes de estourar o limite do container. No k8s, o limite de memória subiu
+  para `768Mi` (request `384Mi`) e o `livenessProbe` ganhou `timeoutSeconds: 10`/`failureThreshold: 3`
+  (o `ping` estourava o timeout default de 1s sob carga, causando restart espúrio).
 - `scripts/deploy-minikube.sh`: build + `minikube image load` da `fcg-rabbitmq:local`.
 - `README.md`: nota sobre a imagem custom e o motivo do plugin.
 
