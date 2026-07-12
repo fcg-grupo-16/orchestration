@@ -20,7 +20,10 @@ x-jwt-secret: &jwt-secret "FiapCloudGames_Demo_SecretKey_Com_Pelo_Menos_256_Bits
 services:
   # ---------------- Infraestrutura ----------------
   rabbitmq:
-    image: rabbitmq:3.13-management
+    # Imagem custom: rabbitmq:3.13-management + plugin rabbitmq_delayed_message_exchange
+    # (exigido pelo delayed redelivery do MassTransit no catalog-api). Ver docker/rabbitmq/.
+    build: ./docker/rabbitmq
+    image: fcg-rabbitmq:local
     container_name: fcg-rabbitmq
     ports:
       - "5672:5672"     # AMQP
