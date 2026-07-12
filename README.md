@@ -200,10 +200,15 @@ Todo **push na `main`** e **todo pull request** dispara o workflow
 | Step | Comando | O que pega |
 |---|---|---|
 | docker-compose | `docker compose -f docker-compose.yml config -q` | sintaxe/estrutura do compose |
-| kubectl dry-run | `kubectl apply -R -f k8s/ --dry-run=client` | erros básicos de estrutura/campos |
-| kubeconform | `kubeconform -strict -ignore-missing-schemas k8s/` | schema rigoroso (campos inválidos) |
+| kubeconform | `kubeconform -strict -ignore-missing-schemas k8s/` | schema rigoroso dos manifestos (offline) |
 | yamllint | `yamllint -d relaxed …` | estilo de YAML (**não-bloqueante** por enquanto) |
 
+> **Por que kubeconform e não `kubectl --dry-run=client`?** Apesar do nome, o dry-run
+> "client" do kubectl moderno **não é offline**: ele precisa de _discovery_ do apiserver
+> e do OpenAPI do cluster para validar — sem cluster no runner, falha com
+> `connection refused`. O `kubeconform` faz a **mesma validação de schema, offline** e
+> mais rigorosa, contra os schemas oficiais do Kubernetes.
+>
 > O CI usa apenas `-f docker-compose.yml` porque o `docker-compose.override.yml` é
 > **gitignored** e não existe no runner. O `kubeconform` roda em versão **pinada**
 > (nunca `latest`) e o `-ignore-missing-schemas` evita falso-negativo em CRDs futuros
@@ -212,9 +217,8 @@ Todo **push na `main`** e **todo pull request** dispara o workflow
 Para reproduzir o CI localmente:
 
 ```bash
-docker compose -f docker-compose.yml config -q          # step 1
-kubectl apply -R -f k8s/ --dry-run=client               # step 2 (sem cluster)
-kubeconform -strict -summary -ignore-missing-schemas k8s/  # step 3 (brew install kubeconform)
+docker compose -f docker-compose.yml config -q             # step 1
+kubeconform -strict -summary -ignore-missing-schemas k8s/  # step 2 (brew install kubeconform)
 ```
 
 ## Como contribuir

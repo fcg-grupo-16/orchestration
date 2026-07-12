@@ -1,11 +1,17 @@
 name: CI
 
-# Valida a orquestração da plataforma a cada PR e push na main:
+# Valida a orquestração da plataforma a cada PR e push na main, SEM subir cluster:
 #   1) docker-compose  -> parse/validação (sem subir nada)
-#   2) manifestos k8s  -> dry-run client-side do kubectl
-#   3) manifestos k8s  -> validação de schema rigorosa (kubeconform)
-#   4) YAML lint       -> estilo (não-bloqueante por enquanto)
+#   2) manifestos k8s  -> validação de schema rigorosa OFFLINE (kubeconform)
+#   3) YAML lint       -> estilo (não-bloqueante por enquanto)
 # Rede de segurança para mudanças de infra: pega YAML quebrado ANTES do merge.
+#
+# Nota: NÃO usamos `kubectl apply --dry-run=client` aqui. Apesar do nome, o dry-run
+# "client" do kubectl moderno NÃO é offline — ele precisa de discovery do apiserver
+# (RESTMapper GVK->GVR) e do OpenAPI do cluster para validar. Sem cluster no runner,
+# ele falha com "connection refused". O kubeconform faz a MESMA validação de schema
+# de forma totalmente offline (contra os schemas oficiais do Kubernetes) e ainda mais
+# rigorosa — por isso é o gate de k8s aqui.
 
 on:
   push:
@@ -39,16 +45,9 @@ jobs:
       - name: Validar docker-compose
         run: docker compose -f docker-compose.yml config -q
 
-      # 2) kubectl client-side dry-run (não precisa de cluster).
-      - name: Instalar kubectl
-        uses: azure/setup-kubectl@v4
-
-      - name: kubectl dry-run dos manifestos
-        run: kubectl apply -R -f k8s/ --dry-run=client
-
-      # 3) kubeconform: validação de schema rigorosa (pega campos inválidos que
-      #    o --dry-run=client deixa passar). -ignore-missing-schemas evita falha
-      #    em CRDs futuros (ex.: SealedSecret da issue de segredos).
+      # 2) kubeconform: validação de schema rigorosa e OFFLINE dos manifestos k8s.
+      #    -strict: reprova campos desconhecidos (additionalProperties).
+      #    -ignore-missing-schemas: evita falha em CRDs futuros (ex.: SealedSecret da #4).
       - name: Instalar kubeconform
         run: |
           curl -sSfL -o kubeconform.tar.gz \
@@ -57,10 +56,10 @@ jobs:
           sudo mv kubeconform /usr/local/bin/
           kubeconform -v
 
-      - name: Validar schema com kubeconform
+      - name: Validar schema dos manifestos k8s (kubeconform)
         run: kubeconform -strict -summary -ignore-missing-schemas -verbose k8s/
 
-      # 4) yamllint de estilo — NÃO-bloqueante por enquanto (continue-on-error).
+      # 3) yamllint de estilo — NÃO-bloqueante por enquanto (continue-on-error).
       #    Quando o time alinhar as regras, troque para bloqueante removendo esta flag.
       - name: yamllint (não-bloqueante)
         continue-on-error: true
