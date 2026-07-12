@@ -31,20 +31,26 @@ spec:
           resources:
             requests:
               cpu: 100m
-              memory: 256Mi
+              memory: 384Mi
             limits:
               cpu: 500m
-              memory: 512Mi
+              # Folga acima do vm_memory_high_watermark.absolute (384MiB) da imagem: o broker
+              # aplica flow control em 384MiB, bem antes deste teto — evita OOMKilled.
+              memory: 768Mi
           livenessProbe:
             exec:
               command: ["rabbitmq-diagnostics", "-q", "ping"]
-            initialDelaySeconds: 20
+            initialDelaySeconds: 30
             periodSeconds: 20
+            # ping pode passar de 1s (default) sob carga/pressão de memória — evita restart espúrio.
+            timeoutSeconds: 10
+            failureThreshold: 3
           readinessProbe:
             exec:
               command: ["rabbitmq-diagnostics", "-q", "check_running"]
             initialDelaySeconds: 20
             periodSeconds: 15
+            timeoutSeconds: 10
 ---
 # O Secret `rabbitmq-secret` agora vem CIFRADO de k8s/05-sealed-secrets.yaml (Sealed Secrets);
 # o controller o materializa neste namespace. Gerar/rotacionar com scripts/seal-secrets.sh.

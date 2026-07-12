@@ -13,3 +13,7 @@ ADD --chmod=644 \
     https://github.com/rabbitmq/rabbitmq-delayed-message-exchange/releases/download/v3.13.0/rabbitmq_delayed_message_exchange-3.13.0.ez \
     /opt/rabbitmq/plugins/
 RUN rabbitmq-plugins enable --offline rabbitmq_delayed_message_exchange
+
+# Teto de memória absoluto (flow control antes do OOM do container). Vai em conf.d (aditivo,
+# carregado após o 10-defaults.conf da imagem base). Ver docker/rabbitmq/rabbitmq.conf.
+COPY rabbitmq.conf /etc/rabbitmq/conf.d/20-memory.conf
