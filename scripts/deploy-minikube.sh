@@ -17,9 +17,9 @@ minikube status >/dev/null 2>&1 || minikube start
 # e o controller são pré-requisitos). Versão pinada (nunca latest) para reprodutibilidade.
 SEALED_SECRETS_VERSION="v0.38.4"
 echo "==> Garantindo o controller Sealed Secrets ($SEALED_SECRETS_VERSION)"
-if ! kubectl -n kube-system get deploy sealed-secrets-controller >/dev/null 2>&1; then
-  kubectl apply -f "https://github.com/bitnami-labs/sealed-secrets/releases/download/${SEALED_SECRETS_VERSION}/controller.yaml"
-fi
+# `kubectl apply` é idempotente: aplicamos SEMPRE para reconciliar na versão pinada — se um
+# controller de outra versão já existir, ele é atualizado (mantém a reprodutibilidade).
+kubectl apply -f "https://github.com/bitnami-labs/sealed-secrets/releases/download/${SEALED_SECRETS_VERSION}/controller.yaml"
 kubectl -n kube-system rollout status deploy/sealed-secrets-controller --timeout=120s
 
 echo "==> Build das imagens locais (:local)"

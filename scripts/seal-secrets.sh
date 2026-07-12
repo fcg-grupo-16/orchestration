@@ -29,11 +29,15 @@ RABBIT_USER="${RABBIT_USER:-guest}"
 RABBIT_PASS="${RABBIT_PASS:-guest}"
 
 command -v kubeseal >/dev/null || { echo "ERRO: kubeseal não encontrado (brew install kubeseal)." >&2; exit 1; }
+command -v kubectl  >/dev/null || { echo "ERRO: kubectl não encontrado." >&2; exit 1; }
 kubectl -n "$CONTROLLER_NS" get deploy sealed-secrets-controller >/dev/null 2>&1 || {
   echo "ERRO: controller sealed-secrets não encontrado no namespace $CONTROLLER_NS." >&2
   echo "      Instale-o primeiro (ver scripts/deploy-minikube.sh ou o README)." >&2
   exit 1
 }
+# Aguarda o controller ficar pronto antes de selar: o kubeseal busca o cert público dele;
+# se ainda não estiver Ready, o seal falharia de forma menos clara mais adiante.
+kubectl -n "$CONTROLLER_NS" rollout status deploy/sealed-secrets-controller --timeout=120s >/dev/null
 
 # seal <name> <label-app|""> <KEY=VALUE>...
 #   gera um Secret em claro (dry-run, nunca aplicado), rotula e o cifra -> SealedSecret.
@@ -65,4 +69,7 @@ seal() {
   seal notifications-api-secret "notifications-api" "RabbitMq__Username=$RABBIT_USER" "RabbitMq__Password=$RABBIT_PASS"
 } > "$OUT"
 
-echo "OK: $OUT gerado ($(grep -c 'kind: SealedSecret' "$OUT") SealedSecrets)."
+# `|| true`: grep -c retorna exit 1 quando a contagem é 0, o que sob `set -e` encerraria o
+# script mesmo tendo gerado o arquivo. Neutralizamos para reportar a contagem com segurança.
+COUNT="$(grep -c 'kind: SealedSecret' "$OUT" || true)"
+echo "OK: $OUT gerado ($COUNT SealedSecrets)."
