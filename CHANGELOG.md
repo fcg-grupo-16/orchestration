@@ -5,6 +5,25 @@ Todas as mudanças relevantes deste repositório de orquestração são document
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/)
 e o versionamento adere a [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [0.8.0] - 2026-07-12
+
+### Adicionado
+- **MongoDB (`paymentsdb`) provisionado para o `payments-api`** (issue #17) — fundação para a
+  persistência/idempotência do serviço (`payments-api#2`/`#1`). O `payments-api` deixa de ser
+  "zero banco": ganha `MongoDbSettings__DatabaseName=paymentsdb` (ConfigMap) e
+  `MongoDbSettings__ConnectionString` com `?replicaSet=rs0` (SealedSecret cifrado), no compose
+  e no k8s, além do initContainer `wait-for-mongodb`. Config **aditiva** — consumida a partir da
+  `payments-api#2`; comportamento atual inalterado. `database-per-service` preservado (reusa a
+  instância `mongodb`, database lógico novo).
+
+### Corrigido
+- **Watermark de memória do RabbitMQ agressivo demais** (issue #19) — o `vm_memory_high_watermark.absolute`
+  de `384MiB` (introduzido na v0.7.0) tripava o flow control sob acúmulo de filas/conexões, colocando
+  as conexões em `blocked`/`blocking` e travando **todos os publishers sem auto-recuperação** (ex.: o
+  `users-api` levava ~20s e retornava 500 ao publicar `UserCreatedEvent`). Subido para `576MiB`, com o
+  limite de memória do k8s de `768Mi` → `1Gi` (request `512Mi`) — ~448Mi de folga acima do watermark,
+  mantendo a proteção de OOM sem bloquear publishers em carga normal.
+
 ## [0.7.0] - 2026-07-12
 
 ### Adicionado
