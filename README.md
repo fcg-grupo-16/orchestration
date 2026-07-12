@@ -181,7 +181,7 @@ Mapeie os hosts para o IP do Ingress e teste:
 ```bash
 echo "$(minikube ip) users.fcg.local catalog.fcg.local" | sudo tee -a /etc/hosts
 
-curl http://users.fcg.local/health/ready       # 200
+curl http://users.fcg.local/health              # 200 (users-api usa /health)
 curl http://catalog.fcg.local/api/v1/jogos      # 200 (lista de jogos)
 ```
 

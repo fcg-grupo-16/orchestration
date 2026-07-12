@@ -63,7 +63,7 @@ echo "       echo \"\$(minikube ip) users.fcg.local catalog.fcg.local\" | sudo t
 echo "     No macOS com driver docker o IP do minikube não é alcançável direto — rode"
 echo "     'minikube tunnel' em outro terminal e aponte os hosts para 127.0.0.1."
 echo "  2) Teste:"
-echo "       curl http://users.fcg.local/health/ready"
+echo "       curl http://users.fcg.local/health          # users-api usa /health"
 echo "       curl http://catalog.fcg.local/api/v1/jogos"
 echo
 echo "Alternativa sem /etc/hosts (port-forward direto dos Services):"
