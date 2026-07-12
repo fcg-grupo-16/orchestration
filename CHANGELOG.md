@@ -5,6 +5,28 @@ Todas as mudanças relevantes deste repositório de orquestração são document
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/)
 e o versionamento adere a [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [0.6.0] - 2026-07-12
+
+### Adicionado
+- **Ingress (NGINX)** para acesso HTTP externo aos serviços voltados ao usuário. Novo
+  `k8s/30-ingress.yaml` (`fcg-ingress`, `ingressClassName: nginx`) com roteamento **por host**:
+  `users.fcg.local → users-api:80` e `catalog.fcg.local → catalog-api:80` — substitui o
+  `kubectl port-forward` manual por URLs estáveis. `payments-api` e `notifications-api` são
+  orientados a eventos e **não** têm entrada HTTP externa (ficam de fora de propósito).
+- `README.md`: seção **"Acesso externo via Ingress"** (habilitar o addon, `/etc/hosts`, o caveat
+  do `minikube tunnel` no macOS + driver docker, e port-forward do controller como alternativa sem sudo).
+
+### Modificado
+- `scripts/deploy-minikube.sh`: habilita o **addon ingress** do minikube (idempotente) e aguarda o
+  `ingress-nginx-controller` ficar pronto antes de seguir; dicas de acesso atualizadas para o Ingress.
+
+### Nota técnica
+- O Ingress **não** usa `nginx.ingress.kubernetes.io/rewrite-target`: com `path: /` sem capture group,
+  o rewrite reescreveria toda requisição para `/`, quebrando rotas como `/api/v1/jogos`. O roteamento é
+  por host e o path é passado **intacto** ao backend.
+- Os `Service` permanecem **ClusterIP** — o Ingress é o único ponto de entrada HTTP externo; a
+  comunicação interna segue pelos nomes de Service. Escopo HTTP local (sem TLS) para o ambiente de demo.
+
 ## [0.5.0] - 2026-07-12
 
 ### Adicionado
