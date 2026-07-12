@@ -181,8 +181,46 @@ Remover:
   do RabbitMQ.
 - A **chave JWT** (`JwtSettings__SecretKey`) **deve ser idêntica** em `users-api` (emite)
   e `catalog-api` (valida).
-- Os valores aqui são de **demonstração**. Em produção, use segredos gerenciados
-  (ex.: AWS Secrets Manager / Sealed Secrets) e nunca versione chaves reais.
+- Os valores são de **demonstração**. NUNCA versione chaves reais.
+
+### Segredos no Kubernetes — Sealed Secrets
+
+No **Kubernetes**, os Secrets **não** são versionados em texto claro. Em vez disso, o repo
+versiona **`SealedSecret`s cifrados** ([`k8s/05-sealed-secrets.yaml`](k8s/05-sealed-secrets.yaml)),
+usando [Bitnami Sealed Secrets](https://github.com/bitnami-labs/sealed-secrets). Apenas o
+**controller do cluster** consegue decifrá-los e materializar os `Secret` reais no namespace `fcg`;
+o arquivo cifrado é seguro para commit.
+
+> No `docker-compose` (dev local) os segredos continuam em variáveis de ambiente/âncora YAML —
+> Sealed Secrets é um mecanismo **específico de Kubernetes**. Os **valores** são idênticos entre
+> compose e k8s; só a forma de armazenamento no cluster muda.
+
+**Pré-requisitos (uma vez por cluster):**
+
+```bash
+# 1) CLI kubeseal
+brew install kubeseal
+
+# 2) controller no cluster (versão pinada; o deploy-minikube.sh também garante isso)
+kubectl apply -f https://github.com/bitnami-labs/sealed-secrets/releases/download/v0.38.4/controller.yaml
+kubectl -n kube-system rollout status deploy/sealed-secrets-controller
+```
+
+**Gerar / rotacionar os segredos** — edite os valores (ou exporte as env vars para valores reais)
+e rode o helper, que regenera o arquivo cifrado:
+
+```bash
+# valores de demo por padrão; para valores reais: export JWT_SECRET_KEY=... RABBIT_PASS=... etc.
+./scripts/seal-secrets.sh
+kubectl apply -f k8s/05-sealed-secrets.yaml   # o controller materializa os Secrets
+```
+
+O `scripts/seal-secrets.sh` garante que `JwtSettings__SecretKey` seja **idêntica** em
+`users-api-secret` e `catalog-api-secret` (JWT parity).
+
+> ⚠️ **A chave do controller é por-cluster.** Se recriar o minikube (`minikube delete`), o novo
+> controller ganha outra chave e os `SealedSecret`s antigos **não decifram mais** — reinstale o
+> controller e rode `./scripts/seal-secrets.sh` de novo. Em produção, faça backup da chave do controller.
 
 ## Credenciais semeadas (seed)
 
@@ -213,7 +251,8 @@ Todo **push na `main`** e **todo pull request** dispara o workflow
 > arquivo versionado, sem influência de um `docker-compose.override.yml` local
 > (gitignored) — o Compose só o carrega automaticamente se ele existir. O `kubeconform`
 > roda em versão **pinada** (nunca `latest`) e o `-ignore-missing-schemas` evita
-> falso-negativo em CRDs futuros (ex.: `SealedSecret`).
+> falso-negativo em CRDs sem schema conhecido — é o caso do `SealedSecret`
+> (`k8s/05-sealed-secrets.yaml`), que o kubeconform **pula** em vez de reprovar.
 
 Para reproduzir o CI localmente:
 

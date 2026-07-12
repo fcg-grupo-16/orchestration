@@ -9,18 +9,7 @@ data:
   ASPNETCORE_ENVIRONMENT: "Production"
   RabbitMq__Host: "rabbitmq"
 ---
-apiVersion: v1
-kind: Secret
-metadata:
-  name: notifications-api-secret
-  namespace: fcg
-  labels:
-    app: notifications-api
-type: Opaque
-stringData:
-  RabbitMq__Username: "guest"
-  RabbitMq__Password: "guest"
----
+# O Secret `notifications-api-secret` agora vem CIFRADO de k8s/05-sealed-secrets.yaml (Sealed Secrets).
 apiVersion: apps/v1
 kind: Deployment
 metadata:

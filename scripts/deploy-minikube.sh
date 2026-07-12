@@ -12,6 +12,16 @@ SERVICES=(users-api catalog-api payments-api notifications-api)
 echo "==> Garantindo que o minikube está rodando"
 minikube status >/dev/null 2>&1 || minikube start
 
+# Controller Sealed Secrets: materializa os SealedSecrets cifrados de k8s/05-sealed-secrets.yaml
+# em Secrets reais no namespace fcg. Precisa existir ANTES do `kubectl apply` (o CRD SealedSecret
+# e o controller são pré-requisitos). Versão pinada (nunca latest) para reprodutibilidade.
+SEALED_SECRETS_VERSION="v0.38.4"
+echo "==> Garantindo o controller Sealed Secrets ($SEALED_SECRETS_VERSION)"
+if ! kubectl -n kube-system get deploy sealed-secrets-controller >/dev/null 2>&1; then
+  kubectl apply -f "https://github.com/bitnami-labs/sealed-secrets/releases/download/${SEALED_SECRETS_VERSION}/controller.yaml"
+fi
+kubectl -n kube-system rollout status deploy/sealed-secrets-controller --timeout=120s
+
 echo "==> Build das imagens locais (:local)"
 for svc in "${SERVICES[@]}"; do
   echo "   - $svc"
