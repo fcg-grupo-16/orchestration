@@ -29,12 +29,16 @@ minikube addons enable ingress
 kubectl -n ingress-nginx rollout status deploy/ingress-nginx-controller --timeout=180s
 
 echo "==> Build das imagens locais (:local)"
+# RabbitMQ custom (base oficial + plugin rabbitmq_delayed_message_exchange).
+echo "   - fcg-rabbitmq"
+docker build -t "fcg-rabbitmq:local" "$ROOT_DIR/docker/rabbitmq"
 for svc in "${SERVICES[@]}"; do
   echo "   - $svc"
   docker build -t "${svc}:local" "$PARENT_DIR/${svc}"
 done
 
 echo "==> Carregando imagens no minikube"
+minikube image load "fcg-rabbitmq:local"
 for svc in "${SERVICES[@]}"; do
   minikube image load "${svc}:local"
 done
