@@ -219,6 +219,10 @@ Remover:
   do RabbitMQ.
 - A **chave JWT** (`JwtSettings__SecretKey`) **deve ser idêntica** em `users-api` (emite)
   e `catalog-api` (valida).
+- **Databases (database-per-service):** `usersdb` (users-api), `catalogdb` (catalog-api) e
+  `paymentsdb` (payments-api). O `paymentsdb` é provisionado aqui (ConfigMap + SealedSecret com
+  `?replicaSet=rs0`) e passa a ser consumido pela persistência/idempotência do payments-api
+  (issues `payments-api#2`/`#1`). Todos reusam a mesma instância `mongodb` (databases lógicos distintos).
 - Os valores são de **demonstração**. NUNCA versione chaves reais.
 
 ### Segredos no Kubernetes — Sealed Secrets
