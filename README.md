@@ -163,6 +163,37 @@ kubectl -n fcg port-forward svc/rabbitmq 15672:15672   # Management UI
 Comunicação interna no cluster usa os nomes de Service (ex.: `http://catalog-api:80`,
 `rabbitmq:5672`, `mongodb:27017`).
 
+### Acesso externo via Ingress
+
+Os serviços HTTP voltados ao usuário (`users-api`, `catalog-api`) são expostos por um **Ingress**
+([`k8s/30-ingress.yaml`](k8s/30-ingress.yaml)), evitando o `port-forward` manual. `payments-api` e
+`notifications-api` são orientados a eventos e **não** têm entrada HTTP externa.
+
+Pré-requisito — o **NGINX Ingress Controller** (o `deploy-minikube.sh` já habilita):
+
+```bash
+minikube addons enable ingress
+kubectl -n ingress-nginx rollout status deploy/ingress-nginx-controller
+```
+
+Mapeie os hosts para o IP do Ingress e teste:
+
+```bash
+echo "$(minikube ip) users.fcg.local catalog.fcg.local" | sudo tee -a /etc/hosts
+
+curl http://users.fcg.local/health              # 200 (users-api usa /health)
+curl http://catalog.fcg.local/api/v1/jogos      # 200 (lista de jogos)
+```
+
+> **macOS + driver docker:** o `minikube ip` (rede interna do Docker) **não** é alcançável direto
+> do host. Rode `minikube tunnel` em outro terminal (expõe o Ingress em `127.0.0.1`) e aponte os
+> hosts para `127.0.0.1` no `/etc/hosts`. Alternativa sem `/etc/hosts`: port-forward do controller —
+> `kubectl -n ingress-nginx port-forward svc/ingress-nginx-controller 8080:80` e então
+> `curl -H 'Host: catalog.fcg.local' http://localhost:8080/api/v1/jogos`.
+
+O roteamento é por **host**; o path é passado **intacto** ao backend (sem `rewrite-target`), então
+rotas como `/api/v1/jogos` chegam inteiras.
+
 Remover:
 
 ```bash

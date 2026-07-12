@@ -22,6 +22,12 @@ echo "==> Garantindo o controller Sealed Secrets ($SEALED_SECRETS_VERSION)"
 kubectl apply -f "https://github.com/bitnami-labs/sealed-secrets/releases/download/${SEALED_SECRETS_VERSION}/controller.yaml"
 kubectl -n kube-system rollout status deploy/sealed-secrets-controller --timeout=120s
 
+# Ingress Controller (NGINX): necessário para o k8s/30-ingress.yaml expor users-api/catalog-api
+# fora do cluster. O addon do minikube é idempotente.
+echo "==> Habilitando o addon ingress (NGINX Ingress Controller)"
+minikube addons enable ingress
+kubectl -n ingress-nginx rollout status deploy/ingress-nginx-controller --timeout=180s
+
 echo "==> Build das imagens locais (:local)"
 for svc in "${SERVICES[@]}"; do
   echo "   - $svc"
@@ -50,7 +56,17 @@ echo
 echo "==> Pods:"
 kubectl -n fcg get pods
 echo
-echo "Pronto. Exemplos de acesso:"
+echo
+echo "Pronto. Acesso externo via Ingress (users-api / catalog-api):"
+echo "  1) Mapeie os hosts no /etc/hosts (uma vez):"
+echo "       echo \"\$(minikube ip) users.fcg.local catalog.fcg.local\" | sudo tee -a /etc/hosts"
+echo "     No macOS com driver docker o IP do minikube não é alcançável direto — rode"
+echo "     'minikube tunnel' em outro terminal e aponte os hosts para 127.0.0.1."
+echo "  2) Teste:"
+echo "       curl http://users.fcg.local/health          # users-api usa /health"
+echo "       curl http://catalog.fcg.local/api/v1/jogos"
+echo
+echo "Alternativa sem /etc/hosts (port-forward direto dos Services):"
 echo "  kubectl -n fcg port-forward svc/users-api 8081:80"
 echo "  kubectl -n fcg port-forward svc/catalog-api 8082:80"
 echo "  kubectl -n fcg port-forward svc/rabbitmq 15672:15672   # Management UI (guest/guest)"
