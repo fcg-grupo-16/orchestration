@@ -1,0 +1,69 @@
+name: CI
+
+# Valida a orquestração da plataforma a cada PR e push na main:
+#   1) docker-compose  -> parse/validação (sem subir nada)
+#   2) manifestos k8s  -> dry-run client-side do kubectl
+#   3) manifestos k8s  -> validação de schema rigorosa (kubeconform)
+#   4) YAML lint       -> estilo (não-bloqueante por enquanto)
+# Rede de segurança para mudanças de infra: pega YAML quebrado ANTES do merge.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancela runs superados do mesmo ref (economia de runner).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least privilege: o job só precisa ler o código.
+permissions:
+  contents: read
+
+env:
+  # Versão pinada do kubeconform (nunca "latest" — reprodutibilidade).
+  KUBECONFORM_VERSION: v0.6.7
+
+jobs:
+  validate:
+    name: Validar compose e manifestos k8s
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 1) docker-compose: parse + validação (não sobe nada).
+      #    -f explícito: o docker-compose.override.yml é gitignored e NÃO existe
+      #    no runner; sem -f, o Compose tentaria mesclar overrides inexistentes.
+      - name: Validar docker-compose
+        run: docker compose -f docker-compose.yml config -q
+
+      # 2) kubectl client-side dry-run (não precisa de cluster).
+      - name: Instalar kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: kubectl dry-run dos manifestos
+        run: kubectl apply -R -f k8s/ --dry-run=client
+
+      # 3) kubeconform: validação de schema rigorosa (pega campos inválidos que
+      #    o --dry-run=client deixa passar). -ignore-missing-schemas evita falha
+      #    em CRDs futuros (ex.: SealedSecret da issue de segredos).
+      - name: Instalar kubeconform
+        run: |
+          curl -sSfL -o kubeconform.tar.gz \
+            "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
+          tar xf kubeconform.tar.gz kubeconform
+          sudo mv kubeconform /usr/local/bin/
+          kubeconform -v
+
+      - name: Validar schema com kubeconform
+        run: kubeconform -strict -summary -ignore-missing-schemas -verbose k8s/
+
+      # 4) yamllint de estilo — NÃO-bloqueante por enquanto (continue-on-error).
+      #    Quando o time alinhar as regras, troque para bloqueante removendo esta flag.
+      - name: yamllint (não-bloqueante)
+        continue-on-error: true
+        run: |
+          pipx install yamllint || pip install yamllint
+          yamllint -d relaxed k8s/ docker-compose.yml
