@@ -1,0 +1,41 @@
+# Ingress HTTP para os serviços voltados ao usuário (users-api, catalog-api).
+# payments-api e notifications-api são orientados a eventos (consomem do RabbitMQ) e NÃO
+# têm entrada HTTP externa — ficam de fora de propósito.
+#
+# Requer um Ingress Controller NGINX no cluster. No minikube: `minikube addons enable ingress`
+# (o scripts/deploy-minikube.sh faz isso). Roteamento por HOST; o path é passado INTACTO ao
+# backend — por isso NÃO usamos `rewrite-target` (com `path: /` ele reescreveria toda
+# requisição para `/`, quebrando rotas como /api/v1/jogos).
+#
+# Acesso: mapeie os hosts para o IP do Ingress no /etc/hosts (ver README). No macOS com driver
+# docker, use `minikube tunnel` e aponte os hosts para 127.0.0.1.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: fcg-ingress
+  namespace: fcg
+  labels:
+    app.kubernetes.io/part-of: fiap-cloud-games
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: users.fcg.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: users-api      # Service ClusterIP de k8s/20-users-api.yaml
+                port:
+                  number: 80         # porta do Service (80 -> targetPort 8080)
+    - host: catalog.fcg.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: catalog-api    # Service ClusterIP de k8s/21-catalog-api.yaml
+                port:
+                  number: 80
