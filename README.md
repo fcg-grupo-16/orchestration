@@ -9,6 +9,8 @@ seu próprio repositório.
 
 > **Grupo 16** — Org GitHub [`fcg-grupo-16`](https://github.com/fcg-grupo-16)
 
+[![CI](https://github.com/fcg-grupo-16/orchestration/actions/workflows/ci.yml/badge.svg)](https://github.com/fcg-grupo-16/orchestration/actions/workflows/ci.yml)
+
 ## Microsserviços
 
 | Serviço | Repositório | Responsabilidade | Eventos |
@@ -189,6 +191,37 @@ O `users-api` cria um administrador na inicialização:
 - **E-mail:** `admin@fcg.com`
 - **Senha:** `Admin@123456`
 
+## CI — validação de compose e manifestos
+
+Todo **push na `main`** e **todo pull request** dispara o workflow
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml), que valida a orquestração
+**sem subir nada** (não há cluster nem build de imagem no CI):
+
+| Step | Comando | O que pega |
+|---|---|---|
+| docker-compose | `docker compose -f docker-compose.yml config -q` | sintaxe/estrutura do compose |
+| kubeconform | `kubeconform -strict -ignore-missing-schemas k8s/` | schema rigoroso dos manifestos (offline) |
+| yamllint | `yamllint -d relaxed …` | estilo de YAML (**não-bloqueante** por enquanto) |
+
+> **Por que kubeconform e não `kubectl --dry-run=client`?** Apesar do nome, o dry-run
+> "client" do kubectl moderno **não é offline**: ele precisa de _discovery_ do apiserver
+> e do OpenAPI do cluster para validar — sem cluster no runner, falha com
+> `connection refused`. O `kubeconform` faz a **mesma validação de schema, offline** e
+> mais rigorosa, contra os schemas oficiais do Kubernetes.
+>
+> O CI usa apenas `-f docker-compose.yml` para ser **determinístico**: valida só o
+> arquivo versionado, sem influência de um `docker-compose.override.yml` local
+> (gitignored) — o Compose só o carrega automaticamente se ele existir. O `kubeconform`
+> roda em versão **pinada** (nunca `latest`) e o `-ignore-missing-schemas` evita
+> falso-negativo em CRDs futuros (ex.: `SealedSecret`).
+
+Para reproduzir o CI localmente:
+
+```bash
+docker compose -f docker-compose.yml config -q             # step 1
+kubeconform -strict -summary -ignore-missing-schemas k8s/  # step 2 (brew install kubeconform)
+```
+
 ## Como contribuir
 
 O fluxo vale para este repo e para os 4 repos de serviço:
@@ -196,7 +229,7 @@ O fluxo vale para este repo e para os 4 repos de serviço:
 1. **Pegue uma issue** no repositório correspondente e atribua a si mesmo (`assignee`).
 2. **Crie um branch** a partir da `main`: `feat/<numero>-descricao-curta` ou `fix/<numero>-descricao-curta`.
 3. **Commits** no padrão [Conventional Commits](https://www.conventionalcommits.org) (`feat:`, `fix:`, `chore:`, `test:`, `docs:`). Mensagens em pt-BR para domínio, inglês para termos técnicos.
-4. **Abra um PR** para a `main` referenciando a issue (`Closes #<numero>`). O CI (build + testes) precisa passar.
+4. **Abra um PR** para a `main` referenciando a issue (`Closes #<numero>`). O CI precisa passar — nos serviços é build + testes; neste repo é a validação de compose/manifestos (ver seção **CI** acima).
 5. **Merge** após review. Nunca commite segredos reais (use ConfigMaps/Secrets e variáveis de ambiente).
 
 Política de idioma: conteúdo de usuário e domínio em **pt-BR**; namespaces, métodos e infraestrutura em **inglês**.

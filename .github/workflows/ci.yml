@@ -1,0 +1,70 @@
+name: CI
+
+# Valida a orquestração da plataforma a cada PR e push na main, SEM subir cluster:
+#   1) docker-compose  -> parse/validação (sem subir nada)
+#   2) manifestos k8s  -> validação de schema rigorosa OFFLINE (kubeconform)
+#   3) YAML lint       -> estilo (não-bloqueante por enquanto)
+# Rede de segurança para mudanças de infra: pega YAML quebrado ANTES do merge.
+#
+# Nota: NÃO usamos `kubectl apply --dry-run=client` aqui. Apesar do nome, o dry-run
+# "client" do kubectl moderno NÃO é offline — ele precisa de discovery do apiserver
+# (RESTMapper GVK->GVR) e do OpenAPI do cluster para validar. Sem cluster no runner,
+# ele falha com "connection refused". O kubeconform faz a MESMA validação de schema
+# de forma totalmente offline (contra os schemas oficiais do Kubernetes) e ainda mais
+# rigorosa — por isso é o gate de k8s aqui.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancela runs superados do mesmo ref (economia de runner).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least privilege: o job só precisa ler o código.
+permissions:
+  contents: read
+
+env:
+  # Versão pinada do kubeconform (nunca "latest" — reprodutibilidade).
+  KUBECONFORM_VERSION: v0.6.7
+
+jobs:
+  validate:
+    name: Validar compose e manifestos k8s
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 1) docker-compose: parse + validação (não sobe nada).
+      #    -f explícito torna a validação DETERMINÍSTICA: valida só o
+      #    docker-compose.yml versionado. O Compose carrega o docker-compose.override.yml
+      #    automaticamente apenas se ele existir (é gitignored); fixar -f garante que
+      #    um override local nunca influencie o resultado do CI.
+      - name: Validar docker-compose
+        run: docker compose -f docker-compose.yml config -q
+
+      # 2) kubeconform: validação de schema rigorosa e OFFLINE dos manifestos k8s.
+      #    -strict: reprova campos desconhecidos (additionalProperties).
+      #    -ignore-missing-schemas: evita falha em CRDs futuros (ex.: SealedSecret da #4).
+      - name: Instalar kubeconform
+        run: |
+          curl -sSfL -o kubeconform.tar.gz \
+            "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
+          tar xf kubeconform.tar.gz kubeconform
+          sudo mv kubeconform /usr/local/bin/
+          kubeconform -v
+
+      - name: Validar schema dos manifestos k8s (kubeconform)
+        run: kubeconform -strict -summary -ignore-missing-schemas -verbose k8s/
+
+      # 3) yamllint de estilo — NÃO-bloqueante por enquanto (continue-on-error).
+      #    Quando o time alinhar as regras, troque para bloqueante removendo esta flag.
+      - name: yamllint (não-bloqueante)
+        continue-on-error: true
+        run: |
+          pipx install yamllint || pip install yamllint
+          yamllint -d relaxed k8s/ docker-compose.yml
