@@ -5,6 +5,27 @@ Todas as mudanças relevantes deste repositório de orquestração são document
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/)
 e o versionamento adere a [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [0.4.0] - 2026-07-12
+
+### Adicionado
+- **Primeiro pipeline de CI do repositório** (`.github/workflows/ci.yml`), disparado em **push na `main`**
+  e em **todo pull request**. Valida a orquestração **sem subir cluster nem construir imagens**:
+  - `docker compose -f docker-compose.yml config -q` — valida o compose (com `-f` explícito para ser
+    **determinístico**, isolando o CI de um `docker-compose.override.yml` local gitignored).
+  - `kubeconform -strict -ignore-missing-schemas` (versão **pinada** `v0.6.7`) — validação de schema
+    **offline** e rigorosa dos manifestos `k8s/`, contra os schemas oficiais do Kubernetes.
+  - `yamllint -d relaxed` — lint de estilo, **não-bloqueante** por enquanto.
+- Rede de segurança para as próximas mudanças de infra (Ingress, Sealed Secrets), que são puro YAML novo:
+  um erro de indentação ou campo inválido passa a **falhar o PR** antes do merge, não no `kubectl apply`.
+- `README.md`: seção **"CI — validação de compose e manifestos"** + badge de status do workflow.
+
+### Nota técnica
+- O gate de k8s usa **`kubeconform`** (offline) em vez de `kubectl apply --dry-run=client`: apesar do
+  nome, o dry-run "client" do kubectl moderno **não é offline** — exige _discovery_ do apiserver e o
+  OpenAPI do cluster, falhando com `connection refused` no runner. O `kubeconform` faz a mesma
+  validação de schema de forma totalmente offline e mais rigorosa. Guardrails do workflow:
+  `permissions: contents: read` (least privilege) e `concurrency` para cancelar runs superados.
+
 ## [0.3.0] - 2026-07-11
 
 ### Adicionado
