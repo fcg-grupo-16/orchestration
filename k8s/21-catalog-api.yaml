@@ -12,21 +12,8 @@ data:
   JwtSettings__Issuer: "FiapCloudGames"
   JwtSettings__Audience: "FiapCloudGames"
 ---
-apiVersion: v1
-kind: Secret
-metadata:
-  name: catalog-api-secret
-  namespace: fcg
-  labels:
-    app: catalog-api
-type: Opaque
-stringData:
-  MongoDbSettings__ConnectionString: "mongodb://mongodb:27017/?replicaSet=rs0"
-  # IMPORTANTE: idêntica à do users-api-secret (valida o JWT emitido por ele).
-  JwtSettings__SecretKey: "FiapCloudGames_Demo_SecretKey_Com_Pelo_Menos_256_Bits_Para_HMAC_SHA256!"
-  RabbitMq__Username: "guest"
-  RabbitMq__Password: "guest"
----
+# O Secret `catalog-api-secret` agora vem CIFRADO de k8s/05-sealed-secrets.yaml (Sealed Secrets).
+# JwtSettings__SecretKey é idêntica à do users-api-secret (valida o JWT emitido por ele) — ver seal-secrets.sh.
 apiVersion: apps/v1
 kind: Deployment
 metadata:

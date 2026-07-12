@@ -43,16 +43,8 @@ spec:
             initialDelaySeconds: 20
             periodSeconds: 15
 ---
-apiVersion: v1
-kind: Secret
-metadata:
-  name: rabbitmq-secret
-  namespace: fcg
-type: Opaque
-stringData:
-  RABBITMQ_DEFAULT_USER: "guest"
-  RABBITMQ_DEFAULT_PASS: "guest"
----
+# O Secret `rabbitmq-secret` agora vem CIFRADO de k8s/05-sealed-secrets.yaml (Sealed Secrets);
+# o controller o materializa neste namespace. Gerar/rotacionar com scripts/seal-secrets.sh.
 apiVersion: v1
 kind: Service
 metadata:

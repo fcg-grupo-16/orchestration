@@ -10,18 +10,7 @@ data:
   RabbitMq__Host: "rabbitmq"
   Payments__MaxApprovedAmount: "5000"
 ---
-apiVersion: v1
-kind: Secret
-metadata:
-  name: payments-api-secret
-  namespace: fcg
-  labels:
-    app: payments-api
-type: Opaque
-stringData:
-  RabbitMq__Username: "guest"
-  RabbitMq__Password: "guest"
----
+# O Secret `payments-api-secret` agora vem CIFRADO de k8s/05-sealed-secrets.yaml (Sealed Secrets).
 apiVersion: apps/v1
 kind: Deployment
 metadata:
