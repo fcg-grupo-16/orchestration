@@ -23,8 +23,9 @@ seu próprio repositório.
 **Stack:** .NET 10 · MongoDB (database por serviço) · RabbitMQ + MassTransit · Docker · Kubernetes.
 
 > **RabbitMQ com plugin de mensagens atrasadas.** O broker roda uma imagem custom
-> (`docker/rabbitmq/`: `rabbitmq:3.13-management` + `rabbitmq_delayed_message_exchange`),
-> exigida pelo **delayed redelivery** (second-level retry) do MassTransit no `catalog-api`.
+> (`docker/rabbitmq/`: `rabbitmq:3.13.7-management` + `rabbitmq_delayed_message_exchange`),
+> exigida pelo **delayed redelivery** (second-level retry) do MassTransit no
+> [`catalog-api`](https://github.com/fcg-grupo-16/catalog-api) (issue `catalog-api#4`).
 > O compose builda via `build:`; no k8s a imagem `fcg-rabbitmq:local` é construída e carregada
 > no minikube pelo `scripts/deploy-minikube.sh`.
 

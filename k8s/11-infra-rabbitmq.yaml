@@ -18,8 +18,8 @@ spec:
     spec:
       containers:
         - name: rabbitmq
-          # Imagem custom (rabbitmq:3.13-management + plugin rabbitmq_delayed_message_exchange),
-          # construída e carregada no minikube pelo scripts/deploy-minikube.sh. Ver docker/rabbitmq/.
+          # Imagem custom (rabbitmq:3.13.7-management + plugin rabbitmq_delayed_message_exchange),
+          # construída e carregada no minikube pelo script deploy-minikube.sh. Ver docker/rabbitmq/.
           image: fcg-rabbitmq:local
           imagePullPolicy: IfNotPresent
           ports:
