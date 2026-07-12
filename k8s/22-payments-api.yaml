@@ -9,6 +9,9 @@ data:
   ASPNETCORE_ENVIRONMENT: "Production"
   RabbitMq__Host: "rabbitmq"
   Payments__MaxApprovedAmount: "5000"
+  # Database próprio (database-per-service). A connection string (com ?replicaSet=rs0) é
+  # sensível e vem do SealedSecret payments-api-secret. Consumido a partir da payments-api#2.
+  MongoDbSettings__DatabaseName: "paymentsdb"
 ---
 # O Secret `payments-api-secret` agora vem CIFRADO de k8s/05-sealed-secrets.yaml (Sealed Secrets).
 apiVersion: apps/v1
@@ -29,6 +32,10 @@ spec:
         app: payments-api
     spec:
       initContainers:
+        - name: wait-for-mongodb
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command: ['sh', '-c', 'until nc -z mongodb 27017; do echo "aguardando mongodb..."; sleep 2; done']
         - name: wait-for-rabbitmq
           image: busybox:1.36
           imagePullPolicy: IfNotPresent

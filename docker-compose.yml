@@ -114,6 +114,8 @@ services:
     image: payments-api:local
     container_name: fcg-payments-api
     depends_on:
+      mongodb:
+        condition: service_healthy
       rabbitmq:
         condition: service_healthy
     environment:
@@ -122,6 +124,10 @@ services:
       RabbitMq__Username: "guest"
       RabbitMq__Password: "guest"
       Payments__MaxApprovedAmount: "5000"
+      # Persistência de pagamentos (paymentsdb) — consumida a partir da payments-api#2.
+      # ?replicaSet=rs0 é obrigatório para as transações do inbox/outbox.
+      MongoDbSettings__ConnectionString: "mongodb://mongodb:27017/?replicaSet=rs0"
+      MongoDbSettings__DatabaseName: "paymentsdb"
     ports:
       - "8083:8080"
     restart: unless-stopped
