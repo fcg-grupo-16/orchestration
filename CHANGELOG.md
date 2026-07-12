@@ -5,6 +5,24 @@ Todas as mudanças relevantes deste repositório de orquestração são document
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/)
 e o versionamento adere a [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [0.7.0] - 2026-07-12
+
+### Adicionado
+- **Imagem custom do RabbitMQ com o plugin `rabbitmq_delayed_message_exchange`** (`docker/rabbitmq/`:
+  `rabbitmq:3.13.7-management` + plugin `v3.13.0`, com `--checksum` de integridade). É pré-requisito
+  do **delayed redelivery** (second-level retry) do MassTransit no `catalog-api` (`catalog-api#4`):
+  sem o plugin, o `UseDelayedMessageScheduler`/`UseDelayedRedelivery` quebraria o serviço em runtime.
+
+### Modificado
+- `docker-compose.yml`: o serviço `rabbitmq` passa a `build: ./docker/rabbitmq` + `image: fcg-rabbitmq:local`.
+- `k8s/11-infra-rabbitmq.yaml`: `image: fcg-rabbitmq:local` + `imagePullPolicy: IfNotPresent`.
+- `scripts/deploy-minikube.sh`: build + `minikube image load` da `fcg-rabbitmq:local`.
+- `README.md`: nota sobre a imagem custom e o motivo do plugin.
+
+### Nota de migração
+- O deploy no cluster agora **constrói e carrega** a imagem `fcg-rabbitmq:local` (o `deploy-minikube.sh`
+  faz isso). Mudança backward-compatible: o plugin presente não altera o uso atual do broker.
+
 ## [0.6.0] - 2026-07-12
 
 ### Adicionado
