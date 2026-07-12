@@ -5,6 +5,38 @@ Todas as mudanças relevantes deste repositório de orquestração são document
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/)
 e o versionamento adere a [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [0.5.0] - 2026-07-12
+
+### Adicionado
+- **Sealed Secrets (Bitnami)** para gerenciar segredos no Kubernetes **sem versioná-los em texto claro**.
+  Novo `k8s/05-sealed-secrets.yaml` com **5 `SealedSecret`s cifrados** (`rabbitmq-secret`, `users-api-secret`,
+  `catalog-api-secret`, `payments-api-secret`, `notifications-api-secret`) — só o controller do cluster
+  decifra; o arquivo cifrado é seguro para commit. O prefixo `05-` os aplica cedo, para o controller
+  materializar os `Secret` antes de os Deployments subirem.
+- **`scripts/seal-secrets.sh`** — helper que (re)gera/rotaciona os SealedSecrets a partir de valores de
+  demonstração (sobrescrevíveis por variáveis de ambiente para segredos reais, que nunca são comitados) e
+  garante a **JWT parity** (mesma `JwtSettings__SecretKey` em `users-api-secret` e `catalog-api-secret`).
+- `README.md`: seção **"Segredos no Kubernetes — Sealed Secrets"** (instalação do controller, geração,
+  rotação e o caveat da chave por-cluster).
+
+### Modificado
+- `scripts/deploy-minikube.sh`: instala o **controller Sealed Secrets** (versão **pinada** `v0.38.4`) e
+  aguarda o rollout **antes** do `kubectl apply` — `kubectl apply` idempotente, reconciliando na versão pinada.
+- `k8s/11/20/21/22/23-*.yaml`: removidos os blocos `kind: Secret` com `stringData` em claro; os `secretRef`
+  seguem apontando para os mesmos nomes, agora materializados pelo controller.
+
+### Removido
+- Todos os `Secret` com valores sensíveis **em texto claro** dos manifestos versionados.
+
+### Nota de migração
+- O deploy no cluster agora **exige o controller Sealed Secrets** instalado. Em um cluster limpo, o
+  `scripts/deploy-minikube.sh` cuida disso automaticamente; em um `kubectl apply -R -f k8s/` manual,
+  instale o controller antes (ver README), senão os `Secret` não materializam e as APIs não sobem.
+- A chave do controller é **por-cluster**: após `minikube delete`, reinstale o controller e rode
+  `./scripts/seal-secrets.sh` para regenerar os SealedSecrets (os antigos deixam de decifrar).
+- O `docker-compose` (dev local) **não muda** — Sealed Secrets é mecanismo específico de Kubernetes;
+  os valores permanecem idênticos entre compose e k8s.
+
 ## [0.4.0] - 2026-07-12
 
 ### Adicionado
