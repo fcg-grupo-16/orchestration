@@ -8,6 +8,9 @@ metadata:
 data:
   ASPNETCORE_ENVIRONMENT: "Production"
   RabbitMq__Host: "rabbitmq"
+  # Database próprio (database-per-service). A connection string (com ?replicaSet=rs0) é
+  # sensível e vem do SealedSecret notifications-api-secret. Consumido a partir da notifications-api#2.
+  MongoDbSettings__DatabaseName: "notificationsdb"
 ---
 # O Secret `notifications-api-secret` agora vem CIFRADO de k8s/05-sealed-secrets.yaml (Sealed Secrets).
 apiVersion: apps/v1
@@ -28,6 +31,10 @@ spec:
         app: notifications-api
     spec:
       initContainers:
+        - name: wait-for-mongodb
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command: ['sh', '-c', 'until nc -z mongodb 27017; do echo "aguardando mongodb..."; sleep 2; done']
         - name: wait-for-rabbitmq
           image: busybox:1.36
           imagePullPolicy: IfNotPresent
@@ -52,13 +59,13 @@ spec:
               memory: 512Mi
           livenessProbe:
             httpGet:
-              path: /health
+              path: /health/live
               port: 8080
             initialDelaySeconds: 15
             periodSeconds: 15
           readinessProbe:
             httpGet:
-              path: /health
+              path: /health/ready
               port: 8080
             initialDelaySeconds: 10
             periodSeconds: 10

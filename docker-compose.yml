@@ -138,6 +138,8 @@ services:
     image: notifications-api:local
     container_name: fcg-notifications-api
     depends_on:
+      mongodb:
+        condition: service_healthy
       rabbitmq:
         condition: service_healthy
     environment:
@@ -145,6 +147,10 @@ services:
       RabbitMq__Host: "rabbitmq"
       RabbitMq__Username: "guest"
       RabbitMq__Password: "guest"
+      # Histórico de notificações (notificationsdb) — consumido a partir da notifications-api#2.
+      # ?replicaSet=rs0 mantém a paridade da connection string com os demais serviços.
+      MongoDbSettings__ConnectionString: "mongodb://mongodb:27017/?replicaSet=rs0"
+      MongoDbSettings__DatabaseName: "notificationsdb"
     ports:
       - "8084:8080"
     restart: unless-stopped
