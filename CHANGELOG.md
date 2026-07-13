@@ -5,6 +5,30 @@ Todas as mudanças relevantes deste repositório de orquestração são document
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/)
 e o versionamento adere a [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [0.10.0] - 2026-07-13
+
+### Adicionado
+- **MongoDB (`notificationsdb`) provisionado para o `notifications-api`** — o serviço deixa de ser
+  "zero banco" e passa a **persistir o histórico das notificações enviadas** (auditoria/relatórios,
+  `notifications-api#2`). Ganha `MongoDbSettings__DatabaseName=notificationsdb` (ConfigMap) e
+  `MongoDbSettings__ConnectionString` com `?replicaSet=rs0` (SealedSecret cifrado), no compose e no
+  k8s, além do initContainer `wait-for-mongodb` e do `depends_on: mongodb`. `database-per-service`
+  preservado (reusa a instância `mongodb`, database lógico novo). Consultável em
+  `GET /api/v1/notificacoes`.
+
+### Modificado
+- **Probes do `notifications-api` separados**: `livenessProbe → /health/live` e
+  `readinessProbe → /health/ready` (antes ambos em `/health`), refletindo o readiness que agora
+  cobre **RabbitMQ + MongoDB**. Entregue junto com a maturação do serviço (`notifications-api#6`).
+- Imagem `:local` do `notifications-api` rebuildada e recarregada no cluster, incorporando o backlog
+  do serviço entregue nesta rodada: idempotência dos consumers (`#1`), retry + dead-letter (`#4`),
+  readiness com RabbitMQ sem leak de conexão (`#6`), provider de e-mail plugável `IEmailSender` (`#3`),
+  testes de integração com MassTransit Test Harness (`#5`) e persistência do histórico (`#2`).
+
+### Validação
+- Pod `Ready` (health check de Mongo + RabbitMQ). Cadastro → registro persistido no `notificationsdb`
+  e retornado por `GET /api/v1/notificacoes`. Fluxos cadastro/compra OK. Broker estável (sem leak).
+
 ## [0.9.0] - 2026-07-13
 
 ### Corrigido
