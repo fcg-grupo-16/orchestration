@@ -26,6 +26,7 @@ JWT_SECRET_KEY="${JWT_SECRET_KEY:-FiapCloudGames_Demo_SecretKey_Com_Pelo_Menos_2
 MONGO_USERS_CONN="${MONGO_USERS_CONN:-mongodb://mongodb:27017/?replicaSet=rs0}"
 MONGO_CATALOG_CONN="${MONGO_CATALOG_CONN:-mongodb://mongodb:27017/?replicaSet=rs0}"
 MONGO_PAYMENTS_CONN="${MONGO_PAYMENTS_CONN:-mongodb://mongodb:27017/?replicaSet=rs0}"
+MONGO_NOTIFICATIONS_CONN="${MONGO_NOTIFICATIONS_CONN:-mongodb://mongodb:27017/?replicaSet=rs0}"
 RABBIT_USER="${RABBIT_USER:-guest}"
 RABBIT_PASS="${RABBIT_PASS:-guest}"
 
@@ -67,7 +68,7 @@ seal() {
   seal users-api-secret         "users-api"         "MongoDbSettings__ConnectionString=$MONGO_USERS_CONN"  "JwtSettings__SecretKey=$JWT_SECRET_KEY" "RabbitMq__Username=$RABBIT_USER" "RabbitMq__Password=$RABBIT_PASS"
   seal catalog-api-secret       "catalog-api"       "MongoDbSettings__ConnectionString=$MONGO_CATALOG_CONN" "JwtSettings__SecretKey=$JWT_SECRET_KEY" "RabbitMq__Username=$RABBIT_USER" "RabbitMq__Password=$RABBIT_PASS"
   seal payments-api-secret      "payments-api"      "MongoDbSettings__ConnectionString=$MONGO_PAYMENTS_CONN" "RabbitMq__Username=$RABBIT_USER" "RabbitMq__Password=$RABBIT_PASS"
-  seal notifications-api-secret "notifications-api" "RabbitMq__Username=$RABBIT_USER" "RabbitMq__Password=$RABBIT_PASS"
+  seal notifications-api-secret "notifications-api" "MongoDbSettings__ConnectionString=$MONGO_NOTIFICATIONS_CONN" "RabbitMq__Username=$RABBIT_USER" "RabbitMq__Password=$RABBIT_PASS"
 } > "$OUT"
 
 # `|| true`: grep -c retorna exit 1 quando a contagem é 0, o que sob `set -e` encerraria o
