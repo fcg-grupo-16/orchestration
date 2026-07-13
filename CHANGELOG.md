@@ -5,6 +5,31 @@ Todas as mudanças relevantes deste repositório de orquestração são document
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/)
 e o versionamento adere a [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [0.9.0] - 2026-07-13
+
+### Corrigido
+- **Leak de conexões AMQP nos health checks de readiness** dos três serviços que publicam/consomem
+  eventos (`users-api#16`, `catalog-api#16`, `payments-api#16`; o payments já tinha o leak corrigido
+  em `#14`). O `AddRabbitMQ` do readiness abria uma **conexão AMQP nova a cada checagem** e não a
+  fechava (+1 por período de `readinessProbe`, em três serviços), acumulando **milhares** de conexões
+  e saturando a memória do broker até o `memory alarm` (que bloqueia os publishers — a mesma classe
+  de sintoma tratada pontualmente no watermark da v0.8.0). No cluster, o broker chegou a **~3.7k
+  conexões** abertas antes da correção.
+- **Correção (por serviço):** o `AddRabbitMQ` passa a usar uma **factory lazy** que cria **uma única**
+  `IConnection` no primeiro uso (não bloqueia o startup — o processo sobe mesmo com o broker fora),
+  a **reutiliza** em todas as checagens (com `AutomaticRecoveryEnabled`), a **recria** quando ela
+  fica fechada (auto-recovery esgotado) via **double-checked locking** (`SemaphoreSlim`), e a
+  descarta no shutdown. Não se usou `Lazy<Task<IConnection>>` porque ele cachearia uma `Task`
+  falhada (broker fora na 1ª checagem) e prenderia o `/health/ready` em `503` mesmo após o broker
+  voltar. Padrão **idêntico** entre os três serviços (paridade). Comportamento observável do
+  readiness inalterado: `503` com o broker fora, `200` quando volta — agora **sem** crescimento de
+  conexões.
+
+### Modificado
+- Imagens `:local` de `users-api`, `catalog-api` e `payments-api` rebuildadas e recarregadas no
+  cluster (minikube) para materializar a correção. Nenhum manifesto k8s alterado — o contrato de
+  probes (`/health/live` + `/health/ready`) permanece o mesmo; a mudança é interna ao app.
+
 ## [0.8.1] - 2026-07-12
 
 ### Corrigido
