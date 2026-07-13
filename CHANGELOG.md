@@ -5,6 +5,16 @@ Todas as mudanças relevantes deste repositório de orquestração são document
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/)
 e o versionamento adere a [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [0.8.1] - 2026-07-12
+
+### Corrigido
+- **Probes do `payments-api` separados** (issue #21): `livenessProbe → /health/live` e
+  `readinessProbe → /health/ready`, refletindo os health checks separados entregues em
+  `payments-api#6`. Antes ambos apontavam para `/health` (agregado), o que fazia o **liveness**
+  depender do RabbitMQ/Mongo — se uma dependência caísse, o pod entrava em restart loop em vez de
+  apenas sair do readiness. Validado no cluster (pod `Ready`, `/health/live` e `/health/ready` = 200,
+  fluxo cadastro→compra→Approved com o payments persistindo em `paymentsdb`).
+
 ## [0.8.0] - 2026-07-12
 
 ### Adicionado
