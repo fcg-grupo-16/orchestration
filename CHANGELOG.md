@@ -5,6 +5,17 @@ Todas as mudanças relevantes deste repositório de orquestração são document
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/)
 e o versionamento adere a [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [0.10.1] - 2026-07-13
+
+### Corrigido
+- **Barreira de memória no health check do RabbitMQ** dos quatro serviços (`users-api`, `catalog-api`,
+  `payments-api`, `notifications-api`). A leitura *fast-path* da conexão reutilizada acontecia **fora**
+  do `SemaphoreSlim`; sem barreira, o JIT poderia cachear a referência em registrador (leitura *stale*
+  entre probes concorrentes) — data race benigno e autocorrigível, mas fechado por rigor. Passou a
+  usar `Volatile.Read`/`Volatile.Write` (pareando com o lock, semântica acquire/release), de forma
+  **uniforme nos quatro serviços**. Comportamento observável inalterado. Imagens `:local` rebuildadas
+  e redeployadas; validado no cluster (4 pods `Ready`, fluxos cadastro/compra OK, broker estável, sem leak).
+
 ## [0.10.0] - 2026-07-13
 
 ### Adicionado
