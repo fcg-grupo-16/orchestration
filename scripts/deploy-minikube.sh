@@ -55,6 +55,11 @@ kubectl -n fcg rollout status statefulset/mongodb --timeout=180s
 # Redis (cache distribuído, issue #25). Precisa estar Ready antes dos serviços: os initContainers
 # `wait-for-redis` de users-api/catalog-api bloqueiam até a porta 6379 responder.
 kubectl -n fcg rollout status deploy/redis --timeout=180s
+# Observabilidade (issue #27). Não bloqueiam os serviços (nenhum initContainer espera por eles),
+# mas subir antes deixa o Prometheus já raspando quando os pods das APIs ficarem Ready.
+kubectl -n fcg rollout status deploy/prometheus --timeout=180s
+kubectl -n fcg rollout status deploy/grafana --timeout=180s
+kubectl -n fcg rollout status deploy/jaeger --timeout=180s
 for svc in "${SERVICES[@]}"; do
   kubectl -n fcg rollout status "deploy/${svc}" --timeout=180s
 done
@@ -77,3 +82,8 @@ echo "Alternativa sem /etc/hosts (port-forward direto dos Services):"
 echo "  kubectl -n fcg port-forward svc/users-api 8081:80"
 echo "  kubectl -n fcg port-forward svc/catalog-api 8082:80"
 echo "  kubectl -n fcg port-forward svc/rabbitmq 15672:15672   # Management UI (guest/guest)"
+echo
+echo "Observabilidade (Opção A — Prometheus + Grafana; Jaeger para os traces):"
+echo "  kubectl -n fcg port-forward svc/grafana 3000:3000        # admin/admin -> pasta FCG"
+echo "  kubectl -n fcg port-forward svc/prometheus 9090:9090     # /targets"
+echo "  kubectl -n fcg port-forward svc/jaeger 16686:16686       # traces"

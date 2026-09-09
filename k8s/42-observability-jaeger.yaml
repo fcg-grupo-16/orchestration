@@ -1,0 +1,100 @@
+# Jaeger all-in-one — coleta e visualização de traces distribuídos (Fase 3, issue #27).
+#
+# POR QUE JAEGER SE A OPÇÃO A SÓ EXIGE MÉTRICAS: o MassTransit 8 propaga contexto de trace W3C
+# nativamente entre publisher e consumer. Com o exportador OTLP ligado nos serviços (users-api#19,
+# catalog-api#19, payments-api#19), o trace do fluxo "Compra de Jogo" atravessa
+# catalog-api -> RabbitMQ -> payments-api -> RabbitMQ -> catalog-api sozinho. Cobrir o terceiro
+# pilar da observabilidade sai quase de graça, e é entregável que o desafio só pede na Opção B.
+#
+# all-in-one (coletor + storage em memória + UI num container) é suficiente e correto para
+# demonstração; em produção seriam componentes separados com storage durável.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jaeger
+  namespace: fcg
+  labels:
+    app: jaeger
+    app.kubernetes.io/part-of: fiap-cloud-games
+spec:
+  replicas: 1
+  # Recreate: com storage em memória, dois pods simultâneos partiriam os spans de um mesmo trace
+  # entre duas instâncias e a UI mostraria traces incompletos.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: jaeger
+  template:
+    metadata:
+      labels:
+        app: jaeger
+    spec:
+      containers:
+        - name: jaeger
+          image: jaegertracing/all-in-one:1.62.0
+          imagePullPolicy: IfNotPresent
+          env:
+            # Liga os receivers OTLP (4317 gRPC / 4318 HTTP), que é o protocolo que o
+            # OpenTelemetry do .NET exporta. SEM esta variável o Jaeger sobe mas não escuta OTLP,
+            # e os serviços falham a exportar em silêncio.
+            - name: COLLECTOR_OTLP_ENABLED
+              value: "true"
+            - name: SPAN_STORAGE_TYPE
+              value: memory
+            # Teto de spans em memória. Sem isto o processo cresce até ser OOMKilled sob carga.
+            - name: MEMORY_MAX_TRACES
+              value: "20000"
+          ports:
+            - name: otlp-grpc
+              containerPort: 4317
+            - name: otlp-http
+              containerPort: 4318
+            - name: ui
+              containerPort: 16686
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 768Mi
+          readinessProbe:
+            httpGet:
+              path: /
+              port: ui
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /
+              port: ui
+            initialDelaySeconds: 20
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: jaeger
+  namespace: fcg
+  labels:
+    app: jaeger
+    app.kubernetes.io/part-of: fiap-cloud-games
+spec:
+  type: ClusterIP
+  selector:
+    app: jaeger
+  ports:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: otlp-grpc
+    - name: otlp-http
+      port: 4318
+      targetPort: otlp-http
+    - name: ui
+      port: 16686
+      targetPort: ui

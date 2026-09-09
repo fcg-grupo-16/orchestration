@@ -20,7 +20,7 @@ seu próprio repositório.
 | **PaymentsAPI** | [`payments-api`](https://github.com/fcg-grupo-16/payments-api) | Processa (simula) o pagamento | consome `OrderPlacedEvent`; publica `PaymentProcessedEvent` |
 | **NotificationsAPI** | [`notifications-api`](https://github.com/fcg-grupo-16/notifications-api) | "Envia" e-mails (log no console) | consome `UserCreatedEvent` e `PaymentProcessedEvent` |
 
-**Stack:** .NET 10 · MongoDB (database por serviço) · **Redis** (cache distribuído) · RabbitMQ + MassTransit · Docker · Kubernetes.
+**Stack:** .NET 10 · MongoDB (database por serviço) · **Redis** (cache distribuído) · RabbitMQ + MassTransit · **Prometheus + Grafana + Jaeger** (observabilidade) · Docker · Kubernetes.
 
 > **RabbitMQ com plugin de mensagens atrasadas.** O broker roda uma imagem custom
 > (`docker/rabbitmq/`: `rabbitmq:3.13.7-management` + `rabbitmq_delayed_message_exchange`),
@@ -102,6 +102,9 @@ Sobe RabbitMQ, MongoDB e os 4 microsserviços. Portas expostas no host:
 | RabbitMQ Management | http://localhost:15672 | guest / guest |
 | MongoDB | mongodb://localhost:27017/?replicaSet=rs0 | — |
 | Redis | localhost:6379 | — |
+| **Grafana** | http://localhost:3000 | admin / admin |
+| **Prometheus** | http://localhost:9090 | — |
+| **Jaeger** | http://localhost:16686 | — |
 
 > Swagger só é exposto em ambiente Development. Para ativá-lo no compose, troque
 > `ASPNETCORE_ENVIRONMENT` para `Development` no serviço desejado.
@@ -226,6 +229,112 @@ Remover:
 > O `PersistentVolumeClaim` gerado pelo `volumeClaimTemplates` **não** é removido por
 > `kubectl delete -R -f k8s/` — os dados ficam para trás de propósito. Para zerar de vez
 > num ambiente de demo: `kubectl -n fcg delete pvc mongo-data-mongodb-0`.
+
+## Observabilidade — escolhemos a **Opção A** (Prometheus + Grafana)
+
+O desafio da Fase 3 pede para escolher entre uma stack de código aberto (**Opção A**: Prometheus +
+Grafana) ou uma plataforma de APM gerenciada (**Opção B**: Datadog ou New Relic), e **documentar a
+escolha aqui**. Optamos pela **Opção A**, por três motivos:
+
+1. **Custo zero e sem dependência de terceiros.** Nenhuma conta, nenhum trial que expira antes da
+   entrega, nenhuma chave de API para gerenciar.
+2. **É o que o próprio enunciado exige para a Opção A:** *"a implantação das ferramentas deve ser
+   feita via manifestos Kubernetes"* — tudo está em [`k8s/40-`](k8s/40-observability-prometheus.yaml),
+   [`41-`](k8s/41-observability-grafana.yaml), [`41b-`](k8s/41b-grafana-dashboard.yaml) e
+   [`42-`](k8s/42-observability-jaeger.yaml), versionado e reproduzível.
+3. **Funciona offline**, o que importa no dia da gravação do vídeo.
+
+### Os três componentes
+
+| Componente | Papel | Acesso |
+|---|---|---|
+| **Prometheus** | raspa `/metrics` dos pods e armazena as séries (retenção 6h) | `kubectl -n fcg port-forward svc/prometheus 9090:9090` |
+| **Grafana** | dashboard de latência, throughput e erros | `kubectl -n fcg port-forward svc/grafana 3000:3000` — admin/admin |
+| **Jaeger** | recebe traces OTLP e mostra o trace distribuído | `kubectl -n fcg port-forward svc/jaeger 16686:16686` |
+
+> **Por que Jaeger, se a Opção A só exige métricas?** O MassTransit 8 propaga contexto de trace W3C
+> nativamente entre publisher e consumer. Com o exportador OTLP ligado nos serviços, o trace do
+> fluxo **"Compra de Jogo"** atravessa `catalog-api → RabbitMQ → payments-api → RabbitMQ →
+> catalog-api` sem código adicional. Cobrir o terceiro pilar da observabilidade sai quase de graça,
+> e é entregável que o desafio só pede na Opção B.
+
+### Como os serviços são descobertos
+
+No **Kubernetes**, por *annotation de pod* — um serviço novo que suba com elas é raspado sem editar
+config nenhuma:
+
+```yaml
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+```
+
+No **compose** não existe API de pods para consultar, então os targets são estáticos em
+[`docker/prometheus/prometheus.yml`](docker/prometheus/prometheus.yml). Nos dois casos as séries
+recebem o label **`service`**, e é isso que faz o **mesmo dashboard** funcionar nos dois ambientes.
+
+### O dashboard
+
+A fonte da verdade é [`observability/fcg-overview.json`](observability/fcg-overview.json),
+versionado. O ConfigMap `k8s/41b-grafana-dashboard.yaml` é **derivado** dele:
+
+```bash
+./scripts/gen-dashboard-configmap.sh    # regenera o ConfigMap a partir do JSON
+```
+
+As quatro métricas exigidas pela Fase 3 vêm **todas do mesmo histograma**
+`http_server_request_duration_seconds`, que o ASP.NET Core publica automaticamente — **nenhuma
+métrica customizada foi necessária**:
+
+| Painel | Métrica exigida | PromQL |
+|---|---|---|
+| Latência p50/p95/p99 por serviço | **latência** | `histogram_quantile(0.95, sum by (le, service) (rate(..._bucket[5m])))` |
+| Throughput por serviço | **contagem de requisições** | `sum by (service) (rate(..._count[5m]))` |
+| Requisições por status code | **contagem por status HTTP** | `sum by (http_response_status_code) (rate(..._count[5m]))` |
+| Taxa de erro 5xx | **taxa de erros** | `100 * sum(rate(..._count{http_response_status_code=~"5.."}[5m])) / sum(rate(..._count[5m]))` |
+
+> ⚠️ **Os painéis ficam vazios até a instrumentação dos serviços entrar.** Este repositório entrega
+> a stack e o contrato de coleta; o endpoint `/metrics` nasce em `users-api#19`, `catalog-api#19` e
+> `payments-api#19`. Até lá o Prometheus **descobre** os três pods e os mostra como `DOWN` com
+> `404 Not Found` em `/metrics` — o que é o comportamento correto e a prova de que a descoberta e a
+> rede estão certas. Acompanhe em **Status → Targets** no Prometheus, ou pelo painel *Saúde da
+> coleta* do próprio dashboard.
+>
+> Ao instrumentar, **confirme o nome real da métrica** no autocomplete do Prometheus: dependendo da
+> versão do exportador ela pode sair como `http_server_request_duration_seconds` ou
+> `http_server_duration_seconds`. Se divergir, ajuste as queries do dashboard e regenere o ConfigMap.
+
+```bash
+# Verificar a coleta
+kubectl -n fcg port-forward svc/prometheus 9090:9090
+open http://localhost:9090/targets
+
+# Abrir o dashboard
+kubectl -n fcg port-forward svc/grafana 3000:3000
+open http://localhost:3000        # admin/admin -> pasta FCG -> "FCG — Visão Geral"
+```
+
+> **Portas 9090, 3000 e 4317 ocupadas?** São portas muito disputadas (outra stack de observabilidade
+> na máquina, por exemplo). No compose elas são publicadas apenas em `127.0.0.1`; para remapear, use
+> o `docker-compose.override.yml` (gitignored), nunca o arquivo versionado:
+>
+> ```yaml
+> services:
+>   prometheus:
+>     ports: !override
+>       - "127.0.0.1:9091:9090"
+>   jaeger:
+>     ports: !override
+>       - "127.0.0.1:16686:16686"
+>       - "127.0.0.1:4327:4317"
+>       - "127.0.0.1:4328:4318"
+> ```
+>
+> ⚠️ E **confirme a identidade** do que responde antes de concluir que a stack subiu — um
+> `curl localhost:9090` pode estar batendo no Prometheus de outro projeto:
+> `curl -s localhost:9090/api/v1/status/config | grep cluster` deve mostrar `fcg-compose`
+> (ou `fcg-minikube` no cluster).
 
 ## Cache distribuído (Redis)
 

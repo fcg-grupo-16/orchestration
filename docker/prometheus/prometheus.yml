@@ -1,0 +1,28 @@
+# Prometheus do docker-compose (Fase 3, issue #27).
+#
+# Diferente do k8s, aqui NÃO existe service discovery: o compose não tem API de pods para
+# consultar. Os targets são estáticos e o label `service` é atribuído à mão — o mesmo label que a
+# regra de relabel do cluster deriva de `__meta_kubernetes_pod_label_app`. Isso é o que faz o
+# MESMO dashboard funcionar nos dois ambientes sem alteração.
+#
+# Ao acrescentar um serviço aqui, use a porta INTERNA do container (8080), não a publicada no host.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: fcg-compose
+
+scrape_configs:
+  - job_name: fcg-pods
+    static_configs:
+      - targets: ["users-api:8080"]
+        labels: { service: users-api }
+      - targets: ["catalog-api:8080"]
+        labels: { service: catalog-api }
+      - targets: ["payments-api:8080"]
+        labels: { service: payments-api }
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+        labels: { service: prometheus }

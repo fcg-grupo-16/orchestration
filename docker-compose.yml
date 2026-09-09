@@ -95,6 +95,70 @@ services:
       start_period: 5s
     restart: unless-stopped
 
+  # ---------------- Observabilidade (Fase 3, Opção A) ----------------
+  # No compose a descoberta é por lista estática (docker/prometheus/prometheus.yml); no k8s é por
+  # annotation de pod. O label `service` é o mesmo nos dois, então o dashboard versionado em
+  # k8s/observability/fcg-overview.json funciona nos dois ambientes sem alteração.
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    container_name: fcg-prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=6h
+      - --web.enable-lifecycle
+    volumes:
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      # Loopback, como o redis: a UI do Prometheus não tem autenticação nenhuma e expõe a telemetria
+      # inteira da plataforma. 9090 é uma porta MUITO disputada — se já estiver ocupada na sua
+      # máquina, remapeie no docker-compose.override.yml (gitignored), nunca aqui.
+      - "127.0.0.1:9090:9090"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:12.1.1
+    container_name: fcg-grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_NEWS_NEWS_FEED_ENABLED: "false"
+    volumes:
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
+      # MESMO arquivo que alimenta o ConfigMap do cluster — dashboard versionado uma vez só.
+      - ./observability:/etc/grafana/dashboards:ro
+    ports:
+      # Loopback: a credencial é admin/admin.
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      - prometheus
+      - jaeger
+    restart: unless-stopped
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.62.0
+    container_name: fcg-jaeger
+    environment:
+      # Sem isto o Jaeger sobe mas NÃO escuta OTLP, e os serviços falham a exportar em silêncio.
+      COLLECTOR_OTLP_ENABLED: "true"
+      SPAN_STORAGE_TYPE: memory
+      MEMORY_MAX_TRACES: "20000"
+    ports:
+      # Loopback: a UI do Jaeger não tem autenticação e os receivers OTLP aceitam spans de
+      # qualquer origem. 4317/4318 são as portas padrão de OTLP e costumam estar ocupadas por
+      # outro coletor na máquina — remapeie no override local se for o caso.
+      - "127.0.0.1:16686:16686"   # UI
+      - "127.0.0.1:4317:4317"     # OTLP gRPC
+      - "127.0.0.1:4318:4318"     # OTLP HTTP
+    restart: unless-stopped
+
   # ---------------- Microsserviços ----------------
   users-api:
     build:
@@ -117,6 +181,11 @@ services:
       # compartilhada de Redis (mesma filosofia do database-per-service no Mongo).
       Redis__ConnectionString: "redis:6379"
       Redis__InstanceName: "fcg:users:"
+      # Traces distribuídos por OTLP para o Jaeger (issue #27). Endpoint AUSENTE = exportador
+      # desligado — é o que mantém `dotnet run` funcionando sem Jaeger no ar.
+      OTEL_SERVICE_NAME: "users-api"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://jaeger:4317"
+      OTEL_EXPORTER_OTLP_PROTOCOL: "grpc"
       JwtSettings__SecretKey: *jwt-secret
       JwtSettings__Issuer: "FiapCloudGames"
       JwtSettings__Audience: "FiapCloudGames"
@@ -147,6 +216,11 @@ services:
       # de Redis, keyspace separado do users-api.
       Redis__ConnectionString: "redis:6379"
       Redis__InstanceName: "fcg:catalog:"
+      # Traces distribuídos por OTLP para o Jaeger (issue #27). Endpoint AUSENTE = exportador
+      # desligado — é o que mantém `dotnet run` funcionando sem Jaeger no ar.
+      OTEL_SERVICE_NAME: "catalog-api"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://jaeger:4317"
+      OTEL_EXPORTER_OTLP_PROTOCOL: "grpc"
       JwtSettings__SecretKey: *jwt-secret   # DEVE ser idêntica à do users-api
       JwtSettings__Issuer: "FiapCloudGames"
       JwtSettings__Audience: "FiapCloudGames"
@@ -173,6 +247,11 @@ services:
       RabbitMq__Username: "guest"
       RabbitMq__Password: "guest"
       Payments__MaxApprovedAmount: "5000"
+      # Traces distribuídos por OTLP para o Jaeger (issue #27). Endpoint AUSENTE = exportador
+      # desligado — é o que mantém `dotnet run` funcionando sem Jaeger no ar.
+      OTEL_SERVICE_NAME: "payments-api"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://jaeger:4317"
+      OTEL_EXPORTER_OTLP_PROTOCOL: "grpc"
       # Persistência de pagamentos (paymentsdb) — consumida a partir da payments-api#2.
       # ?replicaSet=rs0 é obrigatório para as transações do inbox/outbox.
       MongoDbSettings__ConnectionString: "mongodb://mongodb:27017/?replicaSet=rs0"
