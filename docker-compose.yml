@@ -59,6 +59,42 @@ services:
       start_period: 10s
     restart: unless-stopped
 
+  redis:
+    # Camada de cache distribuído da plataforma (Fase 3). Imagem pinada no PATCH, como o resto da infra.
+    image: redis:7.4.1-alpine
+    container_name: fcg-redis
+    # --maxmemory + allkeys-lru: cache NUNCA pode derrubar o container por OOM. Ao atingir o teto,
+    # o Redis descarta as chaves menos usadas — comportamento correto aqui, porque todo dado é
+    # reconstruível a partir do MongoDB.
+    # --save "" e --appendonly no desligam a persistência em disco: é cache, não banco.
+    command:
+      - redis-server
+      - --maxmemory
+      - 256mb
+      - --maxmemory-policy
+      - allkeys-lru
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+    ports:
+      # Bind SÓ no loopback, diferente de mongodb/rabbitmq. O Redis roda sem `requirepass` e com
+      # `protected-mode no`, então o usuário `default` tem +@all sem senha: publicar em 0.0.0.0
+      # daria FLUSHALL, leitura do cache (que conterá dados de usuário) e CONFIG SET a qualquer
+      # máquina na mesma rede. Loopback custa zero e fecha o vetor.
+      - "127.0.0.1:6379:6379"
+    # Teto de memória do CONTAINER, acima do --maxmemory do Redis (256mb) — paridade com o
+    # limits.memory do k8s. Sem isto, o comentário acima sobre "não derrubar o container por OOM"
+    # não teria teto nenhum para proteger.
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+
   # ---------------- Microsserviços ----------------
   users-api:
     build:
@@ -70,10 +106,17 @@ services:
         condition: service_healthy
       mongodb:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
       ASPNETCORE_ENVIRONMENT: Production
       MongoDbSettings__ConnectionString: "mongodb://mongodb:27017/?replicaSet=rs0"
       MongoDbSettings__DatabaseName: "usersdb"
+      # Cache distribuído (consumido a partir da users-api#20). InstanceName é o prefixo de TODA
+      # chave escrita por este serviço — é o que isola logicamente os keyspaces na instância
+      # compartilhada de Redis (mesma filosofia do database-per-service no Mongo).
+      Redis__ConnectionString: "redis:6379"
+      Redis__InstanceName: "fcg:users:"
       JwtSettings__SecretKey: *jwt-secret
       JwtSettings__Issuer: "FiapCloudGames"
       JwtSettings__Audience: "FiapCloudGames"
@@ -94,10 +137,16 @@ services:
         condition: service_healthy
       mongodb:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
       ASPNETCORE_ENVIRONMENT: Production
       MongoDbSettings__ConnectionString: "mongodb://mongodb:27017/?replicaSet=rs0"
       MongoDbSettings__DatabaseName: "catalogdb"
+      # Cache distribuído (consumido a partir da catalog-api#21). Prefixo PRÓPRIO: mesma instância
+      # de Redis, keyspace separado do users-api.
+      Redis__ConnectionString: "redis:6379"
+      Redis__InstanceName: "fcg:catalog:"
       JwtSettings__SecretKey: *jwt-secret   # DEVE ser idêntica à do users-api
       JwtSettings__Issuer: "FiapCloudGames"
       JwtSettings__Audience: "FiapCloudGames"

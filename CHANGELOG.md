@@ -5,6 +5,48 @@ Todas as mudanças relevantes deste repositório de orquestração são document
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/)
 e o versionamento adere a [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [0.12.0] - 2026-09-09
+
+### Adicionado
+- **Redis como camada de cache distribuído da plataforma** (`k8s/12-infra-redis.yaml` + serviço
+  `redis` no compose). Requisito obrigatório da Fase 3. Este repositório entrega a **infraestrutura
+  e o contrato de configuração**; o consumo pelo código vem depois, em `users-api#20` e
+  `catalog-api#21` (cache de consultas onerosas) e `notifications-function#3` (store de
+  idempotência). (#25)
+- **Contrato de configuração do cache:** `Redis__InstanceName` nos ConfigMaps de `users-api`
+  (`fcg:users:`) e `catalog-api` (`fcg:catalog:`); `Redis__ConnectionString` nos SealedSecrets dos
+  dois serviços. (#25)
+- **initContainer `wait-for-redis`** nos Deployments de `users-api` e `catalog-api`, no mesmo padrão
+  dos que já esperam Mongo e RabbitMQ. (#25)
+- Seção **"Cache distribuído (Redis)"** no README, incluindo como remapear a porta quando o host já
+  tem um Redis na 6379. (#25)
+
+### Notas de implementação
+- **`Deployment` sem `PersistentVolumeClaim`, ao contrário do MongoDB.** É cache: todo dado é
+  reconstruível a partir do Mongo, então perder o conteúdo na recriação do Pod é aceitável e evita
+  carregar um PVC que não agregaria nada. Coerente com o compose (`--save ""`, `--appendonly no`).
+- **`--maxmemory 256mb` com `--maxmemory-policy allkeys-lru`**, e `limits.memory` do container
+  **acima** desse teto (512Mi, 2× — alinhado com Mongo e RabbitMQ): se fossem iguais, o kernel
+  mataria o container (OOMKilled) antes de o Redis aplicar a evicção, e o mecanismo de proteção
+  nunca chegaria a rodar. `requests.memory` também em 256Mi (o consumo de regime, não o de idle),
+  senão o pod ficaria em QoS Burstable e seria o primeiro candidato a despejo do namespace.
+- **Isolamento entre serviços é lógico**, por prefixo de chave (`Redis__InstanceName`), e não por
+  instâncias separadas. Mesma filosofia do database-per-service do Mongo, sem o custo de três Redis
+  num ambiente de demonstração.
+- `Service` do tipo **ClusterIP**, sem rota no Ingress: no Kubernetes o Redis não é acessível de
+  fora do cluster. No **compose** a porta é publicada apenas em `127.0.0.1` — o Redis roda sem
+  `requirepass` e com `protected-mode no`, então publicar em `0.0.0.0` daria `FLUSHALL` e leitura
+  do cache a qualquer máquina na mesma rede.
+- **Prefixo de chave é organização, não fronteira de segurança.** Sem autenticação e sem
+  `NetworkPolicy`, qualquer pod do namespace lê e escreve o keyspace de qualquer serviço.
+  Documentado no README como limitação consciente do ambiente de demonstração.
+- `strategy: Recreate` no Deployment: com `RollingUpdate` e `replicas: 1`, o `maxSurge` faria o
+  Service balancear entre dois Redis com estados diferentes durante um update — inofensivo para
+  cache, mas perda de correção para o store de idempotência da Function.
+- `timeoutSeconds`/`failureThreshold` explícitos nas probes, como já fazem os manifestos do Mongo e
+  do RabbitMQ: o default de 1s numa exec probe (fork+exec a cada ciclo) gera restart espúrio sob
+  throttling de CPU, e um restart aqui apaga o cache inteiro da plataforma.
+
 ## [0.11.0] - 2026-09-09
 
 ### Adicionado

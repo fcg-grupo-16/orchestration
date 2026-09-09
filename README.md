@@ -20,7 +20,7 @@ seu próprio repositório.
 | **PaymentsAPI** | [`payments-api`](https://github.com/fcg-grupo-16/payments-api) | Processa (simula) o pagamento | consome `OrderPlacedEvent`; publica `PaymentProcessedEvent` |
 | **NotificationsAPI** | [`notifications-api`](https://github.com/fcg-grupo-16/notifications-api) | "Envia" e-mails (log no console) | consome `UserCreatedEvent` e `PaymentProcessedEvent` |
 
-**Stack:** .NET 10 · MongoDB (database por serviço) · RabbitMQ + MassTransit · Docker · Kubernetes.
+**Stack:** .NET 10 · MongoDB (database por serviço) · **Redis** (cache distribuído) · RabbitMQ + MassTransit · Docker · Kubernetes.
 
 > **RabbitMQ com plugin de mensagens atrasadas.** O broker roda uma imagem custom
 > (`docker/rabbitmq/`: `rabbitmq:3.13.7-management` + `rabbitmq_delayed_message_exchange`),
@@ -101,6 +101,7 @@ Sobe RabbitMQ, MongoDB e os 4 microsserviços. Portas expostas no host:
 | notifications-api | http://localhost:8084 | (worker) |
 | RabbitMQ Management | http://localhost:15672 | guest / guest |
 | MongoDB | mongodb://localhost:27017/?replicaSet=rs0 | — |
+| Redis | localhost:6379 | — |
 
 > Swagger só é exposto em ambiente Development. Para ativá-lo no compose, troque
 > `ASPNETCORE_ENVIRONMENT` para `Development` no serviço desejado.
@@ -226,12 +227,76 @@ Remover:
 > `kubectl delete -R -f k8s/` — os dados ficam para trás de propósito. Para zerar de vez
 > num ambiente de demo: `kubectl -n fcg delete pvc mongo-data-mongodb-0`.
 
+## Cache distribuído (Redis)
+
+A plataforma provisiona um **Redis** como camada de cache distribuído (Fase 3). O consumo pelo
+código dos serviços vem nas issues seguintes: `users-api#20` e `catalog-api#21` (cache de consultas
+onerosas) e `notifications-function#3` (store de idempotência). Este repositório entrega a
+infraestrutura e o contrato de configuração.
+
+| | |
+|---|---|
+| Compose | serviço `redis`, porta `6379` |
+| Kubernetes | [`k8s/12-infra-redis.yaml`](k8s/12-infra-redis.yaml) — `Deployment` + `Service` ClusterIP |
+| Config | `Redis__InstanceName` no ConfigMap (não sensível) · `Redis__ConnectionString` no SealedSecret |
+
+**Isolamento entre serviços é lógico, por prefixo de chave.** Uma instância de Redis atende toda a
+plataforma; cada serviço escreve sob um prefixo próprio, definido em `Redis__InstanceName`:
+`fcg:users:` e `fcg:catalog:` (provisionados aqui) e `fcg:notifications:` (convenção reservada
+para a `notifications-function`, cujo ConfigMap nasce em `notifications-function#5`). Evita subir
+três instâncias num ambiente de demonstração.
+
+> ⚠️ **Prefixo é organização, não fronteira de segurança.** O Redis roda sem autenticação e sem
+> `NetworkPolicy`, então qualquer pod do namespace consegue ler e escrever o keyspace de qualquer
+> serviço — um `KEYS fcg:users:*` a partir do `payments-api` funciona. Diferente do
+> *database-per-service* do Mongo, isto não é uma barreira: é uma convenção de nomes. Aceitável
+> num ambiente de demonstração; em produção exigiria `requirepass`/ACL por serviço e NetworkPolicy
+> de ingress.
+
+**Sem persistência, de propósito.** O Redis sobe com `--save ""` e `--appendonly no`, e no
+Kubernetes é um `Deployment` **sem** `PersistentVolumeClaim` — ao contrário do MongoDB, que é
+`StatefulSet` com volume. Todo dado aqui é reconstruível a partir do Mongo, então perdê-lo na
+recriação do Pod é aceitável e evita carregar um PVC que não agregaria nada.
+
+**Proteção contra OOM.** `--maxmemory 256mb` com `--maxmemory-policy allkeys-lru`: ao atingir o
+teto, o Redis descarta as chaves menos usadas em vez de crescer até estourar. O `limits.memory` do
+container é **o dobro** desse teto (512Mi) justamente para o kernel não matar o container antes de
+a evicção rodar — o `maxmemory` do Redis contabiliza o allocator, não o RSS, então fragmentação e
+buffers de saída de cliente ficam fora daquela conta e entram na do kernel.
+
+```bash
+# compose
+docker compose exec redis redis-cli ping
+docker compose exec redis redis-cli --scan --pattern 'fcg:*'
+
+# kubernetes
+kubectl -n fcg exec deploy/redis -- redis-cli ping
+kubectl -n fcg exec deploy/redis -- redis-cli --scan --pattern 'fcg:*'
+```
+
+> **Porta 6379 ocupada na sua máquina?** É comum ter outro Redis local. Remapeie **apenas** no
+> `docker-compose.override.yml` (gitignored), como já fazemos com o Mongo em `27018` — nunca no
+> `docker-compose.yml` versionado:
+>
+> ```yaml
+> services:
+>   redis:
+>     ports: !override
+>       - "6380:6379"
+> ```
+>
+> Os serviços do compose continuam falando com `redis:6379` pela rede interna do docker; o
+> remapeamento afeta só o acesso a partir do host.
+
 ## Configuração e segredos
 
 - **ConfigMaps** — dados não sensíveis: host do RabbitMQ, nome do database Mongo por
   serviço, issuer/audience do JWT, `ASPNETCORE_ENVIRONMENT`.
-- **Secrets** — dados sensíveis: connection string do MongoDB, chave JWT e credenciais
-  do RabbitMQ.
+- **Secrets** — dados sensíveis: connection string do MongoDB, chave JWT, credenciais
+  do RabbitMQ e a connection string do Redis (`Redis__ConnectionString`).
+- **Cache (Fase 3):** `Redis__InstanceName` vai no **ConfigMap** de cada serviço (é só um prefixo
+  de chave, não sensível); `Redis__ConnectionString` vai no **Secret**, por paridade com as demais
+  connection strings — em produção ela carregaria credencial.
 - A **chave JWT** (`JwtSettings__SecretKey`) **deve ser idêntica** em `users-api` (emite)
   e `catalog-api` (valida).
 - **Databases (database-per-service):** `usersdb` (users-api), `catalogdb` (catalog-api) e

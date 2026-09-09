@@ -52,6 +52,9 @@ kubectl apply -R -f "$ROOT_DIR/k8s/"
 echo "==> Aguardando infra (RabbitMQ Deployment, MongoDB StatefulSet) e microsserviços ficarem prontos"
 kubectl -n fcg rollout status deploy/rabbitmq --timeout=180s
 kubectl -n fcg rollout status statefulset/mongodb --timeout=180s
+# Redis (cache distribuído, issue #25). Precisa estar Ready antes dos serviços: os initContainers
+# `wait-for-redis` de users-api/catalog-api bloqueiam até a porta 6379 responder.
+kubectl -n fcg rollout status deploy/redis --timeout=180s
 for svc in "${SERVICES[@]}"; do
   kubectl -n fcg rollout status "deploy/${svc}" --timeout=180s
 done

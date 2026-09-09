@@ -9,6 +9,10 @@ data:
   ASPNETCORE_ENVIRONMENT: "Production"
   RabbitMq__Host: "rabbitmq"
   MongoDbSettings__DatabaseName: "usersdb"
+  # Cache distribuído (Fase 3). Prefixo de TODA chave escrita por este serviço: é o que
+  # isola logicamente os keyspaces na instância compartilhada de Redis. A connection
+  # string é sensível e vem do SealedSecret users-api-secret.
+  Redis__InstanceName: "fcg:users:"
   JwtSettings__Issuer: "FiapCloudGames"
   JwtSettings__Audience: "FiapCloudGames"
 ---
@@ -40,6 +44,10 @@ spec:
           image: busybox:1.36
           imagePullPolicy: IfNotPresent
           command: ['sh', '-c', 'until nc -z rabbitmq 5672; do echo "aguardando rabbitmq..."; sleep 2; done']
+        - name: wait-for-redis
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command: ['sh', '-c', 'until nc -z redis 6379; do echo "aguardando redis..."; sleep 2; done']
       containers:
         - name: users-api
           image: users-api:local
