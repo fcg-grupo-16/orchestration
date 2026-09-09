@@ -5,6 +5,33 @@ Todas as mudanças relevantes deste repositório de orquestração são document
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/)
 e o versionamento adere a [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [0.11.0] - 2026-09-09
+
+### Adicionado
+- **Topologia declarativa das filas de notificação** (`docker/rabbitmq/definitions.json` +
+  `load-definitions.conf`, carregados pela imagem custom do broker). Cria exchanges, as filas
+  `notifications-user-created` / `notifications-payment-processed`, a dead-letter queue
+  `notifications-dlq` e o usuário `guest` **no boot do broker**, sem depender de nenhum serviço .NET.
+  Pré-requisito da `notifications-function` (Fase 3): o binding `RabbitMQTrigger` da Azure Functions
+  apenas **consome** de uma fila existente — não declara fila, exchange nem binding. Sem isso a
+  mensagem publicada cairia num exchange sem binding e seria **descartada em silêncio**. (#28)
+- **SealedSecret `notifications-function-secret`** com `RabbitMqConnection` (URI AMQP completa,
+  formato exigido pelo binding), `MongoDbSettings__ConnectionString` e `Redis__ConnectionString`. (#28)
+- **`docker/rabbitmq/README.md`** documentando a topologia e as três decisões não óbvias do desenho. (#28)
+
+### Notas de implementação
+- **Dead-letter aplicado por _policy_, não por `x-dead-letter-exchange` nos `arguments` da fila.**
+  Os argumentos participam da checagem de equivalência do `queue.declare`; o MassTransit declara
+  estas filas sem argumento nenhum, então declará-las com o argumento faria o `notifications-api`
+  morrer no startup com `PRECONDITION_FAILED - inequivalent arg 'x-dead-letter-exchange'` durante
+  toda a janela de transição até a remoção do serviço (#29). Verificado empiricamente.
+- **O `definitions.json` espelha exatamente a topologia do MassTransit** (capturada com
+  `rabbitmqadmin export`), incluindo o exchange intermediário por endpoint. Simplificar para um
+  binding direto criaria divergência de propriedades e o mesmo tipo de conflito.
+- **O usuário `guest` precisa estar declarado no arquivo.** Com `load_definitions` configurado o
+  broker registra `Will not seed default virtual host and user: have definitions to load` e deixa de
+  criar o usuário padrão — uma lista `users` vazia derrubaria a autenticação de toda a plataforma.
+
 ## [0.10.1] - 2026-07-13
 
 ### Corrigido

@@ -1,0 +1,176 @@
+{
+  "_comment_1": "Topologia DECLARATIVA das filas de notificacao da plataforma FCG (Fase 3).",
+  "_comment_2": "POR QUE ESTE ARQUIVO EXISTE: ate a Fase 2 quem criava exchanges, filas e bindings era o proprio notifications-api, via MassTransit, no startup. Na Fase 3 esse servico foi substituido pela notifications-function, cujo binding RabbitMQTrigger apenas CONSOME de uma fila existente - ele nao declara nada. Sem esta topologia a fila nao existiria, o evento publicado cairia num exchange sem binding e seria DESCARTADO EM SILENCIO.",
+  "_comment_3": "ESTE ARQUIVO ESPELHA EXATAMENTE o que o MassTransit declara (capturado do broker com `rabbitmqadmin export`). Nao 'simplifique' o caminho type-exchange -> endpoint-exchange -> queue para um binding direto: enquanto o notifications-api ainda existir, qualquer divergencia de propriedade faz o broker recusar o declare dele com PRECONDITION_FAILED e o servico para de subir.",
+  "_comment_4": "DEAD-LETTER VIA POLICY, NAO VIA ARGUMENTO DE FILA. Ver o bloco `policies` abaixo - a explicacao esta la, e a razao foi verificada empiricamente.",
+  "_comment_5": "load_definitions roda no BOOT do broker e e idempotente. Alterou este arquivo? Rebuild da imagem (docker build docker/rabbitmq) + restart do container.",
+
+  "rabbit_version": "3.13.7",
+
+  "_comment_users": "O USUARIO PRECISA ESTAR AQUI - nao e opcional. Quando `load_definitions` esta configurado, o broker registra no boot 'Will not seed default virtual host and user: have definitions to load' e NAO cria mais o usuario `guest` padrao. Com uma lista vazia o broker sobe com ZERO usuarios e TODOS os servicos da plataforma passam a falhar a autenticacao (todos usam guest/guest). Verificado na pratica ao escrever este arquivo. Pelo mesmo motivo o vhost `/` e as permissions tambem precisam estar declarados aqui.",
+  "_comment_users_2": "Credencial de DEMONSTRACAO (guest/guest), igual a que ja esta em claro no docker-compose.yml. NUNCA versione credencial real aqui - em producao o usuario viria de um Secret, com este arquivo gerado no deploy.",
+  "users": [
+    {
+      "name": "guest",
+      "password": "guest",
+      "tags": ["administrator"]
+    }
+  ],
+  "vhosts": [
+    {
+      "name": "/"
+    }
+  ],
+  "permissions": [
+    {
+      "user": "guest",
+      "vhost": "/",
+      "configure": ".*",
+      "write": ".*",
+      "read": ".*"
+    }
+  ],
+  "parameters": [],
+  "global_parameters": [],
+  "topic_permissions": [],
+
+  "_comment_policies": "DLX aplicado por POLICY e nao por `x-dead-letter-exchange` nos `arguments` da fila. MOTIVO (verificado na pratica, nao por suposicao): os argumentos de uma fila participam da checagem de equivalencia do `queue.declare`. O MassTransit declara estas filas SEM argumento nenhum; se este arquivo as declarasse COM x-dead-letter-exchange, o notifications-api passaria a morrer no startup com `PRECONDITION_FAILED - inequivalent arg 'x-dead-letter-exchange'` durante toda a janela de transicao (entre esta issue e a remocao do servico). Policies sao aplicadas pelo servidor POR FORA do declare, entao entregam o mesmo dead-lettering sem nenhum conflito. O padrao e ANCORADO e nao casa com `notifications-dlq` - se casasse, a propria DLQ dead-letteraria para si mesma, criando um loop.",
+  "policies": [
+    {
+      "vhost": "/",
+      "name": "notifications-dlx",
+      "pattern": "^notifications-(user-created|payment-processed)$",
+      "apply-to": "queues",
+      "definition": {
+        "dead-letter-exchange": "notifications-dlx"
+      },
+      "priority": 0
+    }
+  ],
+
+  "queues": [
+    {
+      "_comment": "Fila consumida pela notifications-function (UserCreatedFunction). `arguments` vazio para bater EXATAMENTE com o declare do MassTransit - o dead-lettering vem da policy acima.",
+      "name": "notifications-user-created",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {}
+    },
+    {
+      "_comment": "Fila consumida pela notifications-function (PaymentProcessedFunction).",
+      "name": "notifications-payment-processed",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {}
+    },
+    {
+      "_comment": "Dead-letter queue. Substitui as filas `_error` que o MassTransit criava. Mensagem que esgota as retentativas do host de Functions para AQUI em vez de se perder. NAO e coberta pela policy de DLX (o padrao e ancorado), senao dead-letteraria para si mesma.",
+      "name": "notifications-dlq",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {}
+    }
+  ],
+
+  "exchanges": [
+    {
+      "_comment": "Exchange por TIPO DE MENSAGEM, onde o users-api publica. `fanout` + `durable: true` sao as propriedades que o MassTransit usa - divergir aqui quebra o PUBLISHER com PRECONDITION_FAILED.",
+      "name": "Fcg.Contracts.Events:UserCreatedEvent",
+      "vhost": "/",
+      "type": "fanout",
+      "durable": true,
+      "auto_delete": false,
+      "internal": false,
+      "arguments": {}
+    },
+    {
+      "_comment": "Exchange por tipo de mensagem, onde o payments-api publica.",
+      "name": "Fcg.Contracts.Events:PaymentProcessedEvent",
+      "vhost": "/",
+      "type": "fanout",
+      "durable": true,
+      "auto_delete": false,
+      "internal": false,
+      "arguments": {}
+    },
+    {
+      "_comment": "Exchange de ENDPOINT. O MassTransit sempre cria um exchange com o nome da fila e roteia type-exchange -> endpoint-exchange -> queue. Replicado aqui para a topologia ser identica a dele.",
+      "name": "notifications-user-created",
+      "vhost": "/",
+      "type": "fanout",
+      "durable": true,
+      "auto_delete": false,
+      "internal": false,
+      "arguments": {}
+    },
+    {
+      "_comment": "Exchange de endpoint da fila de pagamento processado.",
+      "name": "notifications-payment-processed",
+      "vhost": "/",
+      "type": "fanout",
+      "durable": true,
+      "auto_delete": false,
+      "internal": false,
+      "arguments": {}
+    },
+    {
+      "_comment": "Dead-letter exchange referenciado pela policy `notifications-dlx`.",
+      "name": "notifications-dlx",
+      "vhost": "/",
+      "type": "fanout",
+      "durable": true,
+      "auto_delete": false,
+      "internal": false,
+      "arguments": {}
+    }
+  ],
+
+  "bindings": [
+    {
+      "_comment": "type-exchange -> endpoint-exchange (fan-out do evento para o endpoint de notificacoes).",
+      "source": "Fcg.Contracts.Events:UserCreatedEvent",
+      "vhost": "/",
+      "destination": "notifications-user-created",
+      "destination_type": "exchange",
+      "routing_key": "",
+      "arguments": {}
+    },
+    {
+      "_comment": "endpoint-exchange -> fila. E daqui que a notifications-function consome.",
+      "source": "notifications-user-created",
+      "vhost": "/",
+      "destination": "notifications-user-created",
+      "destination_type": "queue",
+      "routing_key": "",
+      "arguments": {}
+    },
+    {
+      "source": "Fcg.Contracts.Events:PaymentProcessedEvent",
+      "vhost": "/",
+      "destination": "notifications-payment-processed",
+      "destination_type": "exchange",
+      "routing_key": "",
+      "arguments": {}
+    },
+    {
+      "source": "notifications-payment-processed",
+      "vhost": "/",
+      "destination": "notifications-payment-processed",
+      "destination_type": "queue",
+      "routing_key": "",
+      "arguments": {}
+    },
+    {
+      "_comment": "DLX -> DLQ. Sem este binding a mensagem dead-letterada cairia num exchange sem destino e se perderia - exatamente o que a DLQ existe para evitar.",
+      "source": "notifications-dlx",
+      "vhost": "/",
+      "destination": "notifications-dlq",
+      "destination_type": "queue",
+      "routing_key": "",
+      "arguments": {}
+    }
+  ]
+}

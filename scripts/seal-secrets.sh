@@ -29,6 +29,16 @@ MONGO_PAYMENTS_CONN="${MONGO_PAYMENTS_CONN:-mongodb://mongodb:27017/?replicaSet=
 MONGO_NOTIFICATIONS_CONN="${MONGO_NOTIFICATIONS_CONN:-mongodb://mongodb:27017/?replicaSet=rs0}"
 RABBIT_USER="${RABBIT_USER:-guest}"
 RABBIT_PASS="${RABBIT_PASS:-guest}"
+RABBIT_HOST="${RABBIT_HOST:-rabbitmq}"
+# A notifications-function (Fase 3) NÃO aceita host/usuário/senha separados: o binding
+# RabbitMQTrigger da Azure Functions exige uma URI AMQP COMPLETA numa única app setting
+# (desde a v2 da extensão), cujo NOME é referenciado pelo atributo
+# [RabbitMQTrigger(..., ConnectionStringSetting = "RabbitMqConnection")].
+RABBIT_CONNECTION="${RABBIT_CONNECTION:-amqp://${RABBIT_USER}:${RABBIT_PASS}@${RABBIT_HOST}:5672/}"
+MONGO_FUNCTION_CONN="${MONGO_FUNCTION_CONN:-mongodb://mongodb:27017/?replicaSet=rs0}"
+# Store de idempotência da Function. Depende do Redis provisionado na issue #25 — o segredo é
+# gerado desde já para o deploy da Function (#29) não precisar de um segundo passe aqui.
+REDIS_FUNCTION_CONN="${REDIS_FUNCTION_CONN:-redis:6379}"
 
 command -v kubeseal >/dev/null || { echo "ERRO: kubeseal não encontrado (brew install kubeseal)." >&2; exit 1; }
 command -v kubectl  >/dev/null || { echo "ERRO: kubectl não encontrado." >&2; exit 1; }
@@ -69,6 +79,10 @@ seal() {
   seal catalog-api-secret       "catalog-api"       "MongoDbSettings__ConnectionString=$MONGO_CATALOG_CONN" "JwtSettings__SecretKey=$JWT_SECRET_KEY" "RabbitMq__Username=$RABBIT_USER" "RabbitMq__Password=$RABBIT_PASS"
   seal payments-api-secret      "payments-api"      "MongoDbSettings__ConnectionString=$MONGO_PAYMENTS_CONN" "RabbitMq__Username=$RABBIT_USER" "RabbitMq__Password=$RABBIT_PASS"
   seal notifications-api-secret "notifications-api" "MongoDbSettings__ConnectionString=$MONGO_NOTIFICATIONS_CONN" "RabbitMq__Username=$RABBIT_USER" "RabbitMq__Password=$RABBIT_PASS"
+  # Fase 3 — notifications-function (serverless). As chaves seguem a convenção de APP SETTINGS do
+  # host de Azure Functions, não a de ASP.NET Core dos demais serviços: `RabbitMqConnection` é o
+  # nome literal referenciado pelo atributo [RabbitMQTrigger(..., ConnectionStringSetting = ...)].
+  seal notifications-function-secret "notifications-function" "RabbitMqConnection=$RABBIT_CONNECTION" "MongoDbSettings__ConnectionString=$MONGO_FUNCTION_CONN" "Redis__ConnectionString=$REDIS_FUNCTION_CONN"
 } > "$OUT"
 
 # `|| true`: grep -c retorna exit 1 quando a contagem é 0, o que sob `set -e` encerraria o

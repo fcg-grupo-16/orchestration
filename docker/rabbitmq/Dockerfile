@@ -17,3 +17,16 @@ RUN rabbitmq-plugins enable --offline rabbitmq_delayed_message_exchange
 # Teto de memória absoluto (flow control antes do OOM do container). Vai em conf.d (aditivo,
 # carregado após o 10-defaults.conf da imagem base). Ver docker/rabbitmq/rabbitmq.conf.
 COPY rabbitmq.conf /etc/rabbitmq/conf.d/20-memory.conf
+
+# Topologia DECLARATIVA das filas de notificação (Fase 3, issue #28).
+#
+# Necessária porque a `notifications-function` que substituiu o `notifications-api` usa o binding
+# RabbitMQTrigger da Azure Functions, que só CONSOME de uma fila existente — ele não declara fila,
+# exchange nem binding. Sem isto a fila não existiria, o evento publicado cairia num exchange sem
+# binding e seria DESCARTADO EM SILÊNCIO (sem erro em lugar nenhum).
+#
+# O import roda no boot e é idempotente: declarar algo que já existe com as MESMAS propriedades é
+# no-op. Com propriedades diferentes o broker recusa (PRECONDITION_FAILED) — por isso o
+# definitions.json espelha exatamente o que o MassTransit declara. Ver docker/rabbitmq/README.md.
+COPY definitions.json /etc/rabbitmq/definitions.json
+COPY load-definitions.conf /etc/rabbitmq/conf.d/30-load-definitions.conf
