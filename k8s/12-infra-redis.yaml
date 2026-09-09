@@ -1,0 +1,87 @@
+# Redis — camada de cache distribuído da plataforma FCG (Fase 3, issue #25).
+#
+# Consumido por users-api (users-api#20) e catalog-api (catalog-api#21) para cachear consultas
+# onerosas, e pela notifications-function como store de idempotência.
+#
+# Deployment (não StatefulSet) e SEM PersistentVolumeClaim, DE PROPÓSITO: é CACHE. Todo dado aqui é
+# reconstruível a partir do MongoDB, então perder o conteúdo na recriação do Pod é aceitável — e
+# evita carregar um PVC que não agregaria nada. É a diferença deliberada em relação ao
+# 10-infra-mongodb.yaml, que É banco e por isso é StatefulSet com volumeClaimTemplates.
+# Coerente com o compose, onde o Redis também sobe com `--save ""` e `--appendonly no`.
+#
+# ISOLAMENTO ENTRE SERVIÇOS É LÓGICO, por prefixo de chave (Redis__InstanceName: fcg:users: /
+# fcg:catalog: / fcg:notifications:). Uma instância, keyspaces distintos — mesma filosofia do
+# database-per-service que aplicamos no Mongo, sem o custo de subir três Redis num ambiente de demo.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: fcg
+  labels:
+    app: redis
+    app.kubernetes.io/part-of: fiap-cloud-games
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:7.4.1-alpine
+          imagePullPolicy: IfNotPresent
+          # Mesmos flags do docker-compose.yml (paridade dev/prod).
+          args:
+            - redis-server
+            - --maxmemory
+            - 256mb
+            - --maxmemory-policy
+            - allkeys-lru
+            - --save
+            - ""
+            - --appendonly
+            - "no"
+          ports:
+            - name: redis
+              containerPort: 6379
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              # O limite do container fica ACIMA do --maxmemory do Redis (256Mi) de propósito, para
+              # dar folga ao overhead do processo e à fragmentação do allocator. Se fosse igual, o
+              # kernel mataria o container (OOMKilled) ANTES de o Redis aplicar a evicção LRU — ou
+              # seja, o mecanismo de proteção nunca chegaria a rodar.
+              cpu: 300m
+              memory: 384Mi
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: fcg
+  labels:
+    app: redis
+spec:
+  type: ClusterIP
+  selector:
+    app: redis
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: 6379

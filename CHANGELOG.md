@@ -5,6 +5,33 @@ Todas as mudanças relevantes deste repositório de orquestração são document
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/)
 e o versionamento adere a [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [0.12.0] - 2026-09-09
+
+### Adicionado
+- **Redis como camada de cache distribuído da plataforma** (`k8s/12-infra-redis.yaml` + serviço
+  `redis` no compose). Requisito obrigatório da Fase 3, consumido por `users-api` (users-api#20) e
+  `catalog-api` (catalog-api#21) para reduzir o round-trip ao MongoDB em consultas onerosas, e pela
+  `notifications-function` como store de idempotência. (#25)
+- **Contrato de configuração do cache:** `Redis__InstanceName` nos ConfigMaps de `users-api`
+  (`fcg:users:`) e `catalog-api` (`fcg:catalog:`); `Redis__ConnectionString` nos SealedSecrets dos
+  dois serviços. (#25)
+- **initContainer `wait-for-redis`** nos Deployments de `users-api` e `catalog-api`, no mesmo padrão
+  dos que já esperam Mongo e RabbitMQ. (#25)
+- Seção **"Cache distribuído (Redis)"** no README, incluindo como remapear a porta quando o host já
+  tem um Redis na 6379. (#25)
+
+### Notas de implementação
+- **`Deployment` sem `PersistentVolumeClaim`, ao contrário do MongoDB.** É cache: todo dado é
+  reconstruível a partir do Mongo, então perder o conteúdo na recriação do Pod é aceitável e evita
+  carregar um PVC que não agregaria nada. Coerente com o compose (`--save ""`, `--appendonly no`).
+- **`--maxmemory 256mb` com `--maxmemory-policy allkeys-lru`**, e `limits.memory` do container
+  **acima** desse teto (384Mi): se fossem iguais, o kernel mataria o container (OOMKilled) antes de
+  o Redis aplicar a evicção — o mecanismo de proteção nunca chegaria a rodar.
+- **Isolamento entre serviços é lógico**, por prefixo de chave (`Redis__InstanceName`), e não por
+  instâncias separadas. Mesma filosofia do database-per-service do Mongo, sem o custo de três Redis
+  num ambiente de demonstração.
+- `Service` do tipo **ClusterIP**, sem rota no Ingress: o Redis não é acessível de fora do cluster.
+
 ## [0.11.0] - 2026-09-09
 
 ### Adicionado

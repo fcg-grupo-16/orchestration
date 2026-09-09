@@ -38,6 +38,10 @@ RABBIT_CONNECTION="${RABBIT_CONNECTION:-amqp://${RABBIT_USER}:${RABBIT_PASS}@${R
 MONGO_FUNCTION_CONN="${MONGO_FUNCTION_CONN:-mongodb://mongodb:27017/?replicaSet=rs0}"
 # Store de idempotência da Function. Depende do Redis provisionado na issue #25 — o segredo é
 # gerado desde já para o deploy da Function (#29) não precisar de um segundo passe aqui.
+# Cache distribuído dos serviços HTTP (issue #25). Uma instância de Redis para toda a
+# plataforma; o isolamento entre serviços é LÓGICO, por prefixo de chave
+# (Redis__InstanceName, definido no ConfigMap de cada serviço).
+REDIS_CONN="${REDIS_CONN:-redis:6379}"
 REDIS_FUNCTION_CONN="${REDIS_FUNCTION_CONN:-redis:6379}"
 
 command -v kubeseal >/dev/null || { echo "ERRO: kubeseal não encontrado (brew install kubeseal)." >&2; exit 1; }
@@ -75,8 +79,8 @@ seal() {
   echo "#"
   echo "# JwtSettings__SecretKey é IDÊNTICA em users-api-secret e catalog-api-secret (JWT parity)."
   seal rabbitmq-secret          ""                  "RABBITMQ_DEFAULT_USER=$RABBIT_USER" "RABBITMQ_DEFAULT_PASS=$RABBIT_PASS"
-  seal users-api-secret         "users-api"         "MongoDbSettings__ConnectionString=$MONGO_USERS_CONN"  "JwtSettings__SecretKey=$JWT_SECRET_KEY" "RabbitMq__Username=$RABBIT_USER" "RabbitMq__Password=$RABBIT_PASS"
-  seal catalog-api-secret       "catalog-api"       "MongoDbSettings__ConnectionString=$MONGO_CATALOG_CONN" "JwtSettings__SecretKey=$JWT_SECRET_KEY" "RabbitMq__Username=$RABBIT_USER" "RabbitMq__Password=$RABBIT_PASS"
+  seal users-api-secret         "users-api"         "MongoDbSettings__ConnectionString=$MONGO_USERS_CONN" "Redis__ConnectionString=$REDIS_CONN"  "JwtSettings__SecretKey=$JWT_SECRET_KEY" "RabbitMq__Username=$RABBIT_USER" "RabbitMq__Password=$RABBIT_PASS"
+  seal catalog-api-secret       "catalog-api"       "MongoDbSettings__ConnectionString=$MONGO_CATALOG_CONN" "Redis__ConnectionString=$REDIS_CONN" "JwtSettings__SecretKey=$JWT_SECRET_KEY" "RabbitMq__Username=$RABBIT_USER" "RabbitMq__Password=$RABBIT_PASS"
   seal payments-api-secret      "payments-api"      "MongoDbSettings__ConnectionString=$MONGO_PAYMENTS_CONN" "RabbitMq__Username=$RABBIT_USER" "RabbitMq__Password=$RABBIT_PASS"
   seal notifications-api-secret "notifications-api" "MongoDbSettings__ConnectionString=$MONGO_NOTIFICATIONS_CONN" "RabbitMq__Username=$RABBIT_USER" "RabbitMq__Password=$RABBIT_PASS"
   # Fase 3 — notifications-function (serverless). As chaves seguem a convenção de APP SETTINGS do
