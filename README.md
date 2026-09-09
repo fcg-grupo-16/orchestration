@@ -29,6 +29,21 @@ seu próprio repositório.
 > O compose builda via `build:`; no k8s a imagem `fcg-rabbitmq:local` é construída e carregada
 > no minikube pelo `scripts/deploy-minikube.sh`.
 
+> **Topologia declarativa das filas de notificação (Fase 3).** A mesma imagem custom carrega
+> [`docker/rabbitmq/definitions.json`](docker/rabbitmq/definitions.json) no boot (`load_definitions`),
+> criando os exchanges, as filas `notifications-user-created` / `notifications-payment-processed`, a
+> dead-letter queue `notifications-dlq` e o usuário `guest` — **sem depender de nenhum serviço .NET**.
+> É pré-requisito da [`notifications-function`](https://github.com/fcg-grupo-16/notifications-function):
+> o binding `RabbitMQTrigger` da Azure Functions só **consome** de uma fila existente, ele não declara
+> nada. O raciocínio completo (por que o arquivo espelha exatamente o MassTransit, por que o
+> dead-letter é por *policy* e não por argumento de fila, e por que o usuário `guest` precisa estar
+> declarado) está em [`docker/rabbitmq/README.md`](docker/rabbitmq/README.md).
+>
+> ⚠️ Ao editar o `definitions.json`, **não** altere as propriedades dos exchanges
+> (`fanout`/`durable`) nem acrescente `arguments` nas filas: elas participam da checagem de
+> equivalência do `declare` do AMQP, e divergir quebra publishers e consumers com
+> `PRECONDITION_FAILED`.
+
 ## Fluxos orientados a eventos
 
 ```mermaid
