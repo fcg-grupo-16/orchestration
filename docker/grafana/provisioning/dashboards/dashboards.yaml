@@ -1,0 +1,13 @@
+# Provider de dashboards do Grafana no compose. O diretório apontado aqui é montado a partir de
+# observability/ — o MESMO arquivo que alimenta o ConfigMap do cluster, então dashboard é
+# um artefato só, versionado uma vez.
+apiVersion: 1
+providers:
+  - name: fcg
+    orgId: 1
+    folder: FCG
+    type: file
+    disableDeletion: false
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/dashboards

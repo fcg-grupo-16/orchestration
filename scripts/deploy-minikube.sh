@@ -59,6 +59,17 @@ for svc in "${SERVICES[@]}"; do
   kubectl -n fcg rollout status "deploy/${svc}" --timeout=180s
 done
 
+# Observabilidade (issue #27) — DEPOIS dos serviços e NÃO-FATAL, de propósito.
+# Nenhum initContainer espera por eles, então nada da plataforma depende do rollout.
+# E as imagens vêm do Docker Hub (grafana/grafana sozinho tem ~684 MB), ao contrário das dos
+# serviços, que são pré-carregadas com `minikube image load`. Num cluster novo com rede modesta o
+# pull pode passar do timeout — sob `set -e`, isso mataria o script e reportaria falha num deploy
+# cuja parte essencial funcionou. Por isso o `|| echo`.
+for obs in prometheus grafana jaeger; do
+  kubectl -n fcg rollout status "deploy/${obs}" --timeout=300s \
+    || echo "AVISO: '${obs}' ainda não está pronto (provavelmente baixando a imagem). A plataforma não depende dele."
+done
+
 echo
 echo "==> Pods:"
 kubectl -n fcg get pods
@@ -77,3 +88,8 @@ echo "Alternativa sem /etc/hosts (port-forward direto dos Services):"
 echo "  kubectl -n fcg port-forward svc/users-api 8081:80"
 echo "  kubectl -n fcg port-forward svc/catalog-api 8082:80"
 echo "  kubectl -n fcg port-forward svc/rabbitmq 15672:15672   # Management UI (guest/guest)"
+echo
+echo "Observabilidade (Opção A — Prometheus + Grafana; Jaeger para os traces):"
+echo "  kubectl -n fcg port-forward svc/grafana 3000:3000        # admin/admin -> pasta FCG"
+echo "  kubectl -n fcg port-forward svc/prometheus 9090:9090     # /targets"
+echo "  kubectl -n fcg port-forward svc/jaeger 16686:16686       # traces"

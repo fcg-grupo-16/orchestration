@@ -1,0 +1,337 @@
+# GERADO a partir de observability/fcg-overview.json — NÃO editar à mão.
+#
+# ConfigMap com o JSON do dashboard do Grafana, montado em /etc/grafana/dashboards pelo Deployment
+# de k8s/41-observability-grafana.yaml. A FONTE DA VERDADE é o arquivo em observability/;
+# este aqui é derivado dele.
+#
+# Para regenerar depois de editar o dashboard:
+#   ./scripts/gen-dashboard-configmap.sh
+#
+# Aplicar o ConfigMap novo BASTA: o provider de dashboards do Grafana relê o diretório a cada 10s
+# e o kubelet propaga o ConfigMap montado — a mudança aparece na UI em ~20s, sem restart.
+# (Datasources são diferentes: só são lidos no boot, e exigem rollout restart.)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-fcg
+  namespace: fcg
+  labels:
+    app: grafana
+    app.kubernetes.io/part-of: fiap-cloud-games
+data:
+  fcg-overview.json: |
+    {
+      "uid": "fcg-overview",
+      "title": "FCG — Visão Geral",
+      "description": "Latência, throughput, requisições por status HTTP e taxa de erro dos microsserviços da plataforma FIAP Cloud Games. Fonte versionada: observability/fcg-overview.json",
+      "tags": ["fcg", "fase-3"],
+      "timezone": "browser",
+      "schemaVersion": 39,
+      "version": 1,
+      "editable": true,
+      "refresh": "10s",
+      "time": { "from": "now-30m", "to": "now" },
+      "templating": {
+        "list": [
+          {
+            "name": "service",
+            "label": "Serviço",
+            "type": "query",
+            "datasource": { "type": "prometheus", "uid": "fcg-prometheus" },
+            "query": "label_values(http_server_request_duration_seconds_count, service)",
+            "refresh": 2,
+            "multi": true,
+            "includeAll": true,
+            "allValue": ".*",
+            "current": { "text": "All", "value": "$__all" }
+          }
+        ]
+      },
+      "panels": [
+        {
+          "type": "text",
+          "title": "Como ler este dashboard",
+          "gridPos": { "h": 4, "w": 24, "x": 0, "y": 0 },
+          "options": {
+            "mode": "markdown",
+            "content": "As quatro métricas exigidas pela Fase 3 — **latência**, **contagem de requisições**, **contagem por status code HTTP** e **taxa de erro** — vêm todas do histograma `http_server_request_duration_seconds`, que o ASP.NET Core instrumenta por conta própria — o SDK OpenTelemetry apenas o exporta no formato Prometheus. Nenhuma métrica customizada foi necessária.\n\n> ⚠️ **Painéis vazios?** Os microsserviços só passam a expor `/metrics` depois de `users-api#19`, `catalog-api#19` e `payments-api#19`. Até lá, o Prometheus descobre os pods mas os targets ficam `DOWN` — confira em **Status → Targets** no Prometheus. O painel *Saúde da coleta* abaixo mostra quantos targets estão de pé."
+          }
+        },
+        {
+          "type": "stat",
+          "title": "Saúde da coleta (targets UP)",
+          "datasource": { "type": "prometheus", "uid": "fcg-prometheus" },
+          "gridPos": { "h": 5, "w": 6, "x": 0, "y": 4 },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "count(up{job=\"fcg-pods\"} == 1) or vector(0)",
+              "legendFormat": "UP"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "red", "value": null },
+                  { "color": "green", "value": 1 }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+            "colorMode": "background",
+            "graphMode": "none",
+            "textMode": "auto"
+          }
+        },
+        {
+          "type": "stat",
+          "title": "Taxa de erro (5xx)",
+          "description": "Percentual de requisições que terminaram em 5xx nos últimos 5 minutos, respeitando o filtro de serviço. O `or vector(0)` no numerador é obrigatório: sem nenhum 5xx a série filtrada simplesmente NÃO EXISTE no TSDB, e vetor vazio dividido por qualquer coisa continua vazio — o painel mostraria 'No data' justamente quando a plataforma está saudável.",
+          "datasource": { "type": "prometheus", "uid": "fcg-prometheus" },
+          "gridPos": { "h": 5, "w": 6, "x": 6, "y": 4 },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "100 * (sum(rate(http_server_request_duration_seconds_count{service=~\"$service\", http_response_status_code=~\"5..\"}[5m])) or vector(0)) / clamp_min(sum(rate(http_server_request_duration_seconds_count{service=~\"$service\"}[5m])), 0.001)",
+              "legendFormat": "erro %"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "decimals": 2,
+              "min": 0,
+              "max": 100,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "yellow", "value": 1 },
+                  { "color": "red", "value": 5 }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+            "colorMode": "background",
+            "graphMode": "area",
+            "textMode": "auto"
+          }
+        },
+        {
+          "type": "stat",
+          "title": "Throughput total",
+          "datasource": { "type": "prometheus", "uid": "fcg-prometheus" },
+          "gridPos": { "h": 5, "w": 6, "x": 12, "y": 4 },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(rate(http_server_request_duration_seconds_count{service=~\"$service\"}[5m]))",
+              "legendFormat": "req/s"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": { "unit": "reqps", "decimals": 2, "color": { "mode": "fixed", "fixedColor": "blue" } },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+            "colorMode": "value",
+            "graphMode": "area",
+            "textMode": "auto"
+          }
+        },
+        {
+          "type": "stat",
+          "title": "Latência p95",
+          "datasource": { "type": "prometheus", "uid": "fcg-prometheus" },
+          "gridPos": { "h": 5, "w": 6, "x": 18, "y": 4 },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "histogram_quantile(0.95, sum by (le) (rate(http_server_request_duration_seconds_bucket{service=~\"$service\"}[5m])))",
+              "legendFormat": "p95"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "decimals": 3,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "yellow", "value": 0.5 },
+                  { "color": "red", "value": 1 }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+            "colorMode": "background",
+            "graphMode": "area",
+            "textMode": "auto"
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Latência de requisições (p50 / p95 / p99) por serviço",
+          "description": "Quantis calculados a partir do histograma http_server_request_duration_seconds_bucket. É a métrica de LATÊNCIA exigida pela Fase 3.",
+          "datasource": { "type": "prometheus", "uid": "fcg-prometheus" },
+          "gridPos": { "h": 9, "w": 12, "x": 0, "y": 9 },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "histogram_quantile(0.50, sum by (le, service) (rate(http_server_request_duration_seconds_bucket{service=~\"$service\"}[5m])))",
+              "legendFormat": "p50 {{service}}"
+            },
+            {
+              "refId": "B",
+              "expr": "histogram_quantile(0.95, sum by (le, service) (rate(http_server_request_duration_seconds_bucket{service=~\"$service\"}[5m])))",
+              "legendFormat": "p95 {{service}}"
+            },
+            {
+              "refId": "C",
+              "expr": "histogram_quantile(0.99, sum by (le, service) (rate(http_server_request_duration_seconds_bucket{service=~\"$service\"}[5m])))",
+              "legendFormat": "p99 {{service}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "decimals": 3,
+              "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 5, "showPoints": "never" }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] },
+            "tooltip": { "mode": "multi", "sort": "desc" }
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Throughput (req/s) por serviço",
+          "description": "Série _count do histograma. É a métrica de CONTAGEM TOTAL DE REQUISIÇÕES exigida pela Fase 3.",
+          "datasource": { "type": "prometheus", "uid": "fcg-prometheus" },
+          "gridPos": { "h": 9, "w": 12, "x": 12, "y": 9 },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum by (service) (rate(http_server_request_duration_seconds_count{service=~\"$service\"}[5m]))",
+              "legendFormat": "{{service}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "reqps",
+              "decimals": 2,
+              "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never" }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] },
+            "tooltip": { "mode": "multi", "sort": "desc" }
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Requisições por status code HTTP",
+          "description": "É a métrica de CONTAGEM POR STATUS CODE exigida pela Fase 3. O label http_response_status_code vem da instrumentação do ASP.NET Core, sem código customizado.",
+          "datasource": { "type": "prometheus", "uid": "fcg-prometheus" },
+          "gridPos": { "h": 9, "w": 12, "x": 0, "y": 18 },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum by (http_response_status_code) (rate(http_server_request_duration_seconds_count{service=~\"$service\"}[5m]))",
+              "legendFormat": "HTTP {{http_response_status_code}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "reqps",
+              "decimals": 2,
+              "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 40, "stacking": { "mode": "normal" }, "showPoints": "never" }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] },
+            "tooltip": { "mode": "multi", "sort": "desc" }
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Taxa de erro (5xx) por serviço",
+          "description": "É a métrica de TAXA DE ERROS exigida pela Fase 3, aberta por serviço para identificar o culpado.",
+          "datasource": { "type": "prometheus", "uid": "fcg-prometheus" },
+          "gridPos": { "h": 9, "w": 12, "x": 12, "y": 18 },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "100 * (sum by (service) (rate(http_server_request_duration_seconds_count{service=~\"$service\", http_response_status_code=~\"5..\"}[5m])) or 0 * sum by (service) (rate(http_server_request_duration_seconds_count{service=~\"$service\"}[5m]))) / clamp_min(sum by (service) (rate(http_server_request_duration_seconds_count{service=~\"$service\"}[5m])), 0.001)",
+              "legendFormat": "{{service}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "decimals": 2,
+              "min": 0,
+              "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never" },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "yellow", "value": 1 },
+                  { "color": "red", "value": 5 }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] },
+            "tooltip": { "mode": "multi", "sort": "desc" }
+          }
+        },
+        {
+          "type": "table",
+          "title": "Top 5 rotas mais lentas (p95)",
+          "description": "Onde olhar primeiro quando a latência sobe. Usa o label http_route, que é o TEMPLATE da rota (/api/v1/jogos/{id}) e não a URL concreta — por isso a cardinalidade não explode.",
+          "datasource": { "type": "prometheus", "uid": "fcg-prometheus" },
+          "gridPos": { "h": 9, "w": 24, "x": 0, "y": 27 },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "topk(5, histogram_quantile(0.95, sum by (le, service, http_route) (rate(http_server_request_duration_seconds_bucket{service=~\"$service\"}[5m]))))",
+              "legendFormat": "{{service}} {{http_route}}",
+              "instant": true,
+              "format": "table"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": { "unit": "s", "decimals": 4 },
+            "overrides": []
+          },
+          "options": {
+            "showHeader": true,
+            "sortBy": [{ "displayName": "Value", "desc": true }]
+          },
+          "transformations": [
+            { "id": "organize", "options": { "excludeByName": { "Time": true } } }
+          ]
+        }
+      ]
+    }

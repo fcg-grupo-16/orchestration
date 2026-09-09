@@ -8,6 +8,10 @@ metadata:
 data:
   ASPNETCORE_ENVIRONMENT: "Production"
   RabbitMq__Host: "rabbitmq"
+  # Traces distribuídos por OTLP para o Jaeger (issue #27).
+  OTEL_SERVICE_NAME: "notifications-api"
+  OTEL_EXPORTER_OTLP_ENDPOINT: "http://jaeger:4317"
+  OTEL_EXPORTER_OTLP_PROTOCOL: "grpc"
   # Database próprio (database-per-service). A connection string (com ?replicaSet=rs0) é
   # sensível e vem do SealedSecret notifications-api-secret. Consumido a partir da notifications-api#2.
   MongoDbSettings__DatabaseName: "notificationsdb"
@@ -29,6 +33,13 @@ spec:
     metadata:
       labels:
         app: notifications-api
+      annotations:
+        # Este serviço é worker (sem controller HTTP), então as métricas HTTP saem quase vazias —
+        # o valor aqui são os TRACES: ele consome PaymentProcessedEvent, e sem instrumentá-lo o
+        # trace da compra apareceria com um ramo cortado no Jaeger.
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
     spec:
       initContainers:
         - name: wait-for-mongodb

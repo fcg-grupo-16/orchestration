@@ -1,0 +1,16 @@
+# Datasources provisionados do Grafana no compose. Espelha o ConfigMap grafana-datasources de
+# k8s/41-observability-grafana.yaml — os `uid` DEVEM bater com os referenciados no dashboard, ou os
+# painéis sobem apontando para datasource inexistente.
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    type: prometheus
+    uid: fcg-prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+  - name: Jaeger
+    type: jaeger
+    uid: fcg-jaeger
+    access: proxy
+    url: http://jaeger:16686

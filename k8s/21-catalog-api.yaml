@@ -7,6 +7,12 @@ metadata:
     app: catalog-api
 data:
   ASPNETCORE_ENVIRONMENT: "Production"
+  # Traces distribuídos por OTLP para o Jaeger (issue #27). Nomes padrão do OpenTelemetry,
+  # lidos automaticamente pelo SDK. Endpoint AUSENTE = exportador desligado, que é o que
+  # mantém `dotnet run` e os testes de integração funcionando sem Jaeger no ar.
+  OTEL_SERVICE_NAME: "catalog-api"
+  OTEL_EXPORTER_OTLP_ENDPOINT: "http://jaeger:4317"
+  OTEL_EXPORTER_OTLP_PROTOCOL: "grpc"
   RabbitMq__Host: "rabbitmq"
   MongoDbSettings__DatabaseName: "catalogdb"
   # Cache distribuído (Fase 3). Prefixo de TODA chave escrita por este serviço: é o que
@@ -34,6 +40,13 @@ spec:
     metadata:
       labels:
         app: catalog-api
+      annotations:
+        # Descoberta pelo Prometheus (issue #27). O scrape_config `fcg-pods` filtra por esta
+        # annotation, lê a porta daqui e usa o label `app` acima como label `service` nas séries.
+        # O endpoint /metrics passa a existir com a instrumentação OpenTelemetry do serviço.
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
     spec:
       initContainers:
         - name: wait-for-mongodb

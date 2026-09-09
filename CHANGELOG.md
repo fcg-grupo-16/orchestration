@@ -5,6 +5,64 @@ Todas as mudanças relevantes deste repositório de orquestração são document
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/)
 e o versionamento adere a [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [0.13.0] - 2026-09-09
+
+### Adicionado
+- **Stack de observabilidade — Opção A do desafio (Prometheus + Grafana)**, implantada 100% via
+  manifestos Kubernetes, como o enunciado exige para esta opção: `k8s/40-observability-prometheus.yaml`
+  (com RBAC de leitura para a service discovery), `k8s/41-observability-grafana.yaml` e
+  `k8s/42-observability-jaeger.yaml`. Equivalentes no `docker-compose.yml` para desenvolvimento. (#27)
+- **Dashboard `FCG — Visão Geral` versionado** em `observability/fcg-overview.json`, com os
+  quatro painéis exigidos pela fase — latência (p50/p95/p99), throughput, requisições por status
+  code HTTP e taxa de erro — mais top-5 de rotas lentas e variável de filtro por serviço. O
+  ConfigMap `k8s/41b-grafana-dashboard.yaml` é **derivado** do JSON, regenerado por
+  `scripts/gen-dashboard-configmap.sh`. (#27)
+- **Jaeger** para traces distribuídos, cobrindo o terceiro pilar da observabilidade que o desafio só
+  exige na Opção B. O MassTransit 8 propaga contexto W3C nativamente, então o trace da compra
+  atravessa catalog → RabbitMQ → payments → RabbitMQ → catalog sem código adicional. (#27)
+- **Contrato de coleta:** annotations `prometheus.io/scrape|port|path` nos Deployments de
+  `users-api`, `catalog-api` e `payments-api`, e `OTEL_SERVICE_NAME` / `OTEL_EXPORTER_OTLP_ENDPOINT`
+  / `OTEL_EXPORTER_OTLP_PROTOCOL` nos ConfigMaps dos três. (#27)
+- Seção **"Observabilidade — escolhemos a Opção A"** no README, com a justificativa da escolha
+  (exigência explícita do enunciado), as queries PromQL de cada painel e o procedimento de
+  verificação. (#27)
+
+### Notas de implementação
+- **Descoberta por annotation de pod, não por lista fixa de targets.** Um serviço novo que suba com
+  a annotation é raspado sem editar a config do Prometheus — evita que o `scrape_config` vire uma
+  segunda fonte da verdade sobre quais serviços existem. No compose, que não tem API de pods, os
+  targets são estáticos; o label `service` é o mesmo nos dois, e é o que faz o **mesmo dashboard**
+  servir aos dois ambientes.
+- **As quatro métricas exigidas vêm todas do histograma `http_server_request_duration_seconds`**,
+  que o ASP.NET Core instrumenta por conta própria e o SDK OpenTelemetry exporta no formato
+  Prometheus: um histograma entrega latência (via `histogram_quantile`), contagem (série `_count`)
+  e recorte por status code (label) de uma vez. Nenhuma métrica customizada foi necessária.
+- **A taxa de erro precisa de `or vector(0)` no numerador.** Sem nenhum 5xx a série filtrada não
+  existe no TSDB, e vetor vazio dividido por qualquer coisa continua vazio — o painel mostraria
+  `No data` justamente no estado saudável, visualmente idêntico a "a stack quebrou". O `clamp_min`
+  no denominador resolve um caso diferente (o `NaN` de 0/0 quando o tráfego cessa); os dois são
+  necessários.
+- **RBAC do Prometheus é `Role` namespaced, não `ClusterRole`.** A única service discovery é
+  `role: pod` restrita ao namespace `fcg`; conceder nodes/services/endpoints cluster-wide seria
+  permissão morta.
+- **`MEMORY_MAX_TRACES` do Jaeger em 5000, não 20000.** ~62 KiB por trace de 12 spans (medido):
+  20000 custariam ~1,25 GB contra um limite de 768Mi — o container seria OOMKilled por volta de
+  11,5k traces, ou seja o teto que existe para evitar o OOM ficaria acima do ponto de OOM.
+- **Alterar o dashboard não exige reiniciar o Grafana:** o provider relê o diretório a cada 10s e o
+  ConfigMap montado propaga (~20s, zero restarts — medido). Datasources, sim, só são lidos no boot.
+- **`notifications-api` também instrumentado.** É worker (métricas HTTP quase vazias), mas consome
+  `PaymentProcessedEvent` — sem ele o trace da compra apareceria com um ramo cortado no Jaeger.
+- **Prometheus, Grafana e Jaeger sem PVC e com `strategy: Recreate`**, mesmo raciocínio do Redis:
+  retenção curta, dados descartáveis, e duas instâncias simultâneas atrás do mesmo Service
+  produziriam séries/traces partidos durante o rollout.
+- **Portas do compose publicadas apenas em `127.0.0.1`.** Prometheus e Jaeger não têm autenticação
+  nenhuma e expõem a telemetria inteira da plataforma; o Grafana usa admin/admin. No cluster os três
+  são `ClusterIP` sem rota no Ingress.
+- **Os painéis ficam vazios até `users-api#19`, `catalog-api#19` e `payments-api#19`.** Este
+  repositório entrega a stack e o contrato de coleta; o endpoint `/metrics` nasce nos serviços. Até
+  lá os targets aparecem `DOWN` com `404` — que é o comportamento correto e a prova de que a
+  descoberta e a rede estão certas.
+
 ## [0.12.0] - 2026-09-09
 
 ### Adicionado

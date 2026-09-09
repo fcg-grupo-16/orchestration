@@ -1,0 +1,204 @@
+# Prometheus — coleta de métricas da plataforma FCG (Fase 3, issue #27).
+#
+# Opção A de observabilidade do desafio: stack de código aberto, implantada VIA MANIFESTOS
+# Kubernetes (exigência explícita do enunciado para esta opção).
+#
+# DESCOBERTA POR ANNOTATION DE POD, não por lista fixa de targets: um serviço novo que suba com
+# `prometheus.io/scrape: "true"` é raspado automaticamente, sem editar este arquivo. É o que evita
+# que a config de scrape vire uma segunda fonte da verdade sobre quais serviços existem.
+#
+# SEM PersistentVolumeClaim, de propósito, e pelo mesmo motivo do Redis: a retenção é de 6h e o
+# objetivo é a demonstração em tempo real. Se o Pod reiniciar, o histórico se perde — aceitável, e
+# evita carregar um PVC que não agrega à entrega.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prometheus
+  namespace: fcg
+  labels:
+    app: prometheus
+    app.kubernetes.io/part-of: fiap-cloud-games
+---
+# Role NAMESPACED, não ClusterRole: o único kubernetes_sd_config abaixo é `role: pod` restrito a
+# `namespaces: [fcg]`, então a única permissão realmente exercida é list/watch de pods NESTE
+# namespace. Verificado em prometheus_sd_kubernetes_events_total: só o coletor de `pod` registra
+# eventos; nodes, services e endpoints ficam zerados. Conceder cluster-wide o que se usa num
+# namespace só é permissão morta.
+#
+# Se algum dia acrescentarmos `role: node` (métricas do kubelet) ou `role: endpoints`, aí sim será
+# preciso um ClusterRole — e o comentário deve mudar junto.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: fcg-prometheus
+  namespace: fcg
+  labels:
+    app.kubernetes.io/part-of: fiap-cloud-games
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: fcg-prometheus
+  namespace: fcg
+  labels:
+    app.kubernetes.io/part-of: fiap-cloud-games
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: fcg-prometheus
+subjects:
+  - kind: ServiceAccount
+    name: prometheus
+    namespace: fcg
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: fcg
+  labels:
+    app: prometheus
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+      evaluation_interval: 15s
+      external_labels:
+        cluster: fcg-minikube
+
+    scrape_configs:
+      # Auto-descoberta dos pods do namespace fcg que declaram prometheus.io/scrape: "true".
+      - job_name: fcg-pods
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names: [fcg]
+        relabel_configs:
+          # 1) Só pods que pediram para ser raspados.
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+            action: keep
+            regex: "true"
+          # 2) Path customizável por annotation (default /metrics).
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+            action: replace
+            target_label: __metrics_path__
+            regex: (.+)
+          # 3) Troca a porta do endereço descoberto pela porta da annotation. O __address__ vem
+          #    como "10.244.0.7:8080"; sem esta regra o Prometheus usaria a primeira porta do pod,
+          #    que nem sempre é a de métricas.
+          - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+            action: replace
+            regex: ([^:]+)(?::\d+)?;(\d+)
+            replacement: $1:$2
+            target_label: __address__
+          # 4) Labels úteis para filtrar no Grafana.
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: kubernetes_namespace
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+          # `service` é o label que os painéis do dashboard usam para separar os microsserviços.
+          # Vem do label `app` do pod, que todos os nossos Deployments já definem.
+          - source_labels: [__meta_kubernetes_pod_label_app]
+            target_label: service
+
+      # O próprio Prometheus. Além de monitorar o monitor, é o que permite validar o pipeline
+      # inteiro (scrape -> PromQL -> Grafana) ANTES de os microsserviços exporem /metrics.
+      - job_name: prometheus
+        static_configs:
+          - targets: ["localhost:9090"]
+            labels:
+              service: prometheus
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  namespace: fcg
+  labels:
+    app: prometheus
+    app.kubernetes.io/part-of: fiap-cloud-games
+spec:
+  replicas: 1
+  # Recreate: sem PVC, dois Prometheus simultâneos raspariam em paralelo e o Service alternaria
+  # entre duas séries temporais diferentes durante o rollout — gráfico serrilhado sem causa real.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: prometheus
+  template:
+    metadata:
+      labels:
+        app: prometheus
+    spec:
+      serviceAccountName: prometheus
+      containers:
+        - name: prometheus
+          image: prom/prometheus:v3.5.0
+          imagePullPolicy: IfNotPresent
+          args:
+            - --config.file=/etc/prometheus/prometheus.yml
+            - --storage.tsdb.path=/prometheus
+            - --storage.tsdb.retention.time=6h
+            # Habilita o POST /-/reload, para recarregar a config sem matar o pod.
+            - --web.enable-lifecycle
+          ports:
+            - name: http
+              containerPort: 9090
+          volumeMounts:
+            - name: config
+              mountPath: /etc/prometheus
+            - name: data
+              mountPath: /prometheus
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 768Mi
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /-/healthy
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+      volumes:
+        - name: config
+          configMap:
+            name: prometheus-config
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: fcg
+  labels:
+    app: prometheus
+    app.kubernetes.io/part-of: fiap-cloud-games
+spec:
+  # ClusterIP: a UI do Prometheus não é exposta fora do cluster (sem rota no gateway). O acesso na
+  # demonstração é por `kubectl port-forward`.
+  type: ClusterIP
+  selector:
+    app: prometheus
+  ports:
+    - name: http
+      port: 9090
+      targetPort: http
