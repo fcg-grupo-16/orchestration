@@ -229,9 +229,10 @@ Remover:
 
 ## Cache distribuído (Redis)
 
-A plataforma roda um **Redis** como camada de cache distribuído (Fase 3), consumido por
-`users-api` e `catalog-api` para reduzir o round-trip ao MongoDB em consultas repetidas e
-onerosas, e pela `notifications-function` como store de idempotência.
+A plataforma provisiona um **Redis** como camada de cache distribuído (Fase 3). O consumo pelo
+código dos serviços vem nas issues seguintes: `users-api#20` e `catalog-api#21` (cache de consultas
+onerosas) e `notifications-function#3` (store de idempotência). Este repositório entrega a
+infraestrutura e o contrato de configuração.
 
 | | |
 |---|---|
@@ -240,10 +241,17 @@ onerosas, e pela `notifications-function` como store de idempotência.
 | Config | `Redis__InstanceName` no ConfigMap (não sensível) · `Redis__ConnectionString` no SealedSecret |
 
 **Isolamento entre serviços é lógico, por prefixo de chave.** Uma instância de Redis atende toda a
-plataforma; cada serviço escreve sob um prefixo próprio (`fcg:users:`, `fcg:catalog:`,
-`fcg:notifications:`), definido em `Redis__InstanceName`. É a mesma filosofia do
-*database-per-service* que aplicamos no Mongo, sem o custo de subir três instâncias num ambiente de
-demonstração.
+plataforma; cada serviço escreve sob um prefixo próprio, definido em `Redis__InstanceName`:
+`fcg:users:` e `fcg:catalog:` (provisionados aqui) e `fcg:notifications:` (convenção reservada
+para a `notifications-function`, cujo ConfigMap nasce em `notifications-function#5`). Evita subir
+três instâncias num ambiente de demonstração.
+
+> ⚠️ **Prefixo é organização, não fronteira de segurança.** O Redis roda sem autenticação e sem
+> `NetworkPolicy`, então qualquer pod do namespace consegue ler e escrever o keyspace de qualquer
+> serviço — um `KEYS fcg:users:*` a partir do `payments-api` funciona. Diferente do
+> *database-per-service* do Mongo, isto não é uma barreira: é uma convenção de nomes. Aceitável
+> num ambiente de demonstração; em produção exigiria `requirepass`/ACL por serviço e NetworkPolicy
+> de ingress.
 
 **Sem persistência, de propósito.** O Redis sobe com `--save ""` e `--appendonly no`, e no
 Kubernetes é um `Deployment` **sem** `PersistentVolumeClaim` — ao contrário do MongoDB, que é
@@ -252,8 +260,9 @@ recriação do Pod é aceitável e evita carregar um PVC que não agregaria nada
 
 **Proteção contra OOM.** `--maxmemory 256mb` com `--maxmemory-policy allkeys-lru`: ao atingir o
 teto, o Redis descarta as chaves menos usadas em vez de crescer até estourar. O `limits.memory` do
-container é **maior** que esse teto (384Mi) justamente para o kernel não matar o container antes de
-a evicção rodar.
+container é **o dobro** desse teto (512Mi) justamente para o kernel não matar o container antes de
+a evicção rodar — o `maxmemory` do Redis contabiliza o allocator, não o RSS, então fragmentação e
+buffers de saída de cliente ficam fora daquela conta e entram na do kernel.
 
 ```bash
 # compose
@@ -283,8 +292,11 @@ kubectl -n fcg exec deploy/redis -- redis-cli --scan --pattern 'fcg:*'
 
 - **ConfigMaps** — dados não sensíveis: host do RabbitMQ, nome do database Mongo por
   serviço, issuer/audience do JWT, `ASPNETCORE_ENVIRONMENT`.
-- **Secrets** — dados sensíveis: connection string do MongoDB, chave JWT e credenciais
-  do RabbitMQ.
+- **Secrets** — dados sensíveis: connection string do MongoDB, chave JWT, credenciais
+  do RabbitMQ e a connection string do Redis (`Redis__ConnectionString`).
+- **Cache (Fase 3):** `Redis__InstanceName` vai no **ConfigMap** de cada serviço (é só um prefixo
+  de chave, não sensível); `Redis__ConnectionString` vai no **Secret**, por paridade com as demais
+  connection strings — em produção ela carregaria credencial.
 - A **chave JWT** (`JwtSettings__SecretKey`) **deve ser idêntica** em `users-api` (emite)
   e `catalog-api` (valida).
 - **Databases (database-per-service):** `usersdb` (users-api), `catalogdb` (catalog-api) e

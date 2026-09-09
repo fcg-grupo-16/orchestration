@@ -38,11 +38,10 @@ RABBIT_CONNECTION="${RABBIT_CONNECTION:-amqp://${RABBIT_USER}:${RABBIT_PASS}@${R
 MONGO_FUNCTION_CONN="${MONGO_FUNCTION_CONN:-mongodb://mongodb:27017/?replicaSet=rs0}"
 # Store de idempotência da Function. Depende do Redis provisionado na issue #25 — o segredo é
 # gerado desde já para o deploy da Function (#29) não precisar de um segundo passe aqui.
-# Cache distribuído dos serviços HTTP (issue #25). Uma instância de Redis para toda a
-# plataforma; o isolamento entre serviços é LÓGICO, por prefixo de chave
-# (Redis__InstanceName, definido no ConfigMap de cada serviço).
+# Cache distribuído. Uma ÚNICA instância de Redis para toda a plataforma; o isolamento entre
+# serviços é LÓGICO, por prefixo de chave (Redis__InstanceName, no ConfigMap de cada serviço).
+# Por isso a connection string é a mesma para todos — inclusive para a notifications-function.
 REDIS_CONN="${REDIS_CONN:-redis:6379}"
-REDIS_FUNCTION_CONN="${REDIS_FUNCTION_CONN:-redis:6379}"
 
 command -v kubeseal >/dev/null || { echo "ERRO: kubeseal não encontrado (brew install kubeseal)." >&2; exit 1; }
 command -v kubectl  >/dev/null || { echo "ERRO: kubectl não encontrado." >&2; exit 1; }
@@ -86,7 +85,7 @@ seal() {
   # Fase 3 — notifications-function (serverless). As chaves seguem a convenção de APP SETTINGS do
   # host de Azure Functions, não a de ASP.NET Core dos demais serviços: `RabbitMqConnection` é o
   # nome literal referenciado pelo atributo [RabbitMQTrigger(..., ConnectionStringSetting = ...)].
-  seal notifications-function-secret "notifications-function" "RabbitMqConnection=$RABBIT_CONNECTION" "MongoDbSettings__ConnectionString=$MONGO_FUNCTION_CONN" "Redis__ConnectionString=$REDIS_FUNCTION_CONN"
+  seal notifications-function-secret "notifications-function" "RabbitMqConnection=$RABBIT_CONNECTION" "MongoDbSettings__ConnectionString=$MONGO_FUNCTION_CONN" "Redis__ConnectionString=$REDIS_CONN"
 } > "$OUT"
 
 # `|| true`: grep -c retorna exit 1 quando a contagem é 0, o que sob `set -e` encerraria o

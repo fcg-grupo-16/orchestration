@@ -78,7 +78,15 @@ services:
       - --appendonly
       - "no"
     ports:
-      - "6379:6379"
+      # Bind SÓ no loopback, diferente de mongodb/rabbitmq. O Redis roda sem `requirepass` e com
+      # `protected-mode no`, então o usuário `default` tem +@all sem senha: publicar em 0.0.0.0
+      # daria FLUSHALL, leitura do cache (que conterá dados de usuário) e CONFIG SET a qualquer
+      # máquina na mesma rede. Loopback custa zero e fecha o vetor.
+      - "127.0.0.1:6379:6379"
+    # Teto de memória do CONTAINER, acima do --maxmemory do Redis (256mb) — paridade com o
+    # limits.memory do k8s. Sem isto, o comentário acima sobre "não derrubar o container por OOM"
+    # não teria teto nenhum para proteger.
+    mem_limit: 512m
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
