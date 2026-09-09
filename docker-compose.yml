@@ -98,7 +98,7 @@ services:
   # ---------------- Observabilidade (Fase 3, Opção A) ----------------
   # No compose a descoberta é por lista estática (docker/prometheus/prometheus.yml); no k8s é por
   # annotation de pod. O label `service` é o mesmo nos dois, então o dashboard versionado em
-  # k8s/observability/fcg-overview.json funciona nos dois ambientes sem alteração.
+  # observability/fcg-overview.json funciona nos dois ambientes sem alteração.
   prometheus:
     image: prom/prometheus:v3.5.0
     container_name: fcg-prometheus
@@ -149,7 +149,10 @@ services:
       # Sem isto o Jaeger sobe mas NÃO escuta OTLP, e os serviços falham a exportar em silêncio.
       COLLECTOR_OTLP_ENABLED: "true"
       SPAN_STORAGE_TYPE: memory
-      MEMORY_MAX_TRACES: "20000"
+      # ~62 KiB por trace de 12 spans (medido): 5000 traces ≈ 330 MiB. Ver k8s/42 para o raciocínio
+      # completo — 20000 estouraria o limite de memória do container antes de o teto agir.
+      MEMORY_MAX_TRACES: "5000"
+      GOMEMLIMIT: "700MiB"
     ports:
       # Loopback: a UI do Jaeger não tem autenticação e os receivers OTLP aceitam spans de
       # qualquer origem. 4317/4318 são as portas padrão de OTLP e costumam estar ocupadas por
@@ -279,6 +282,11 @@ services:
       # ?replicaSet=rs0 mantém a paridade da connection string com os demais serviços.
       MongoDbSettings__ConnectionString: "mongodb://mongodb:27017/?replicaSet=rs0"
       MongoDbSettings__DatabaseName: "notificationsdb"
+      # Traces distribuídos (issue #27). Worker sem HTTP: o valor aqui são os traces, não
+      # as métricas — ele consome PaymentProcessedEvent e fecha o ramo do trace da compra.
+      OTEL_SERVICE_NAME: "notifications-api"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://jaeger:4317"
+      OTEL_EXPORTER_OTLP_PROTOCOL: "grpc"
     ports:
       - "8084:8080"
     restart: unless-stopped

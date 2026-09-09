@@ -34,9 +34,24 @@ e o versionamento adere a [Semantic Versioning](https://semver.org/lang/pt-BR/).
   targets são estáticos; o label `service` é o mesmo nos dois, e é o que faz o **mesmo dashboard**
   servir aos dois ambientes.
 - **As quatro métricas exigidas vêm todas do histograma `http_server_request_duration_seconds`**,
-  publicado automaticamente pelo ASP.NET Core: um histograma entrega latência (via
-  `histogram_quantile`), contagem (série `_count`) e recorte por status code (label) de uma vez.
-  Nenhuma métrica customizada foi necessária.
+  que o ASP.NET Core instrumenta por conta própria e o SDK OpenTelemetry exporta no formato
+  Prometheus: um histograma entrega latência (via `histogram_quantile`), contagem (série `_count`)
+  e recorte por status code (label) de uma vez. Nenhuma métrica customizada foi necessária.
+- **A taxa de erro precisa de `or vector(0)` no numerador.** Sem nenhum 5xx a série filtrada não
+  existe no TSDB, e vetor vazio dividido por qualquer coisa continua vazio — o painel mostraria
+  `No data` justamente no estado saudável, visualmente idêntico a "a stack quebrou". O `clamp_min`
+  no denominador resolve um caso diferente (o `NaN` de 0/0 quando o tráfego cessa); os dois são
+  necessários.
+- **RBAC do Prometheus é `Role` namespaced, não `ClusterRole`.** A única service discovery é
+  `role: pod` restrita ao namespace `fcg`; conceder nodes/services/endpoints cluster-wide seria
+  permissão morta.
+- **`MEMORY_MAX_TRACES` do Jaeger em 5000, não 20000.** ~62 KiB por trace de 12 spans (medido):
+  20000 custariam ~1,25 GB contra um limite de 768Mi — o container seria OOMKilled por volta de
+  11,5k traces, ou seja o teto que existe para evitar o OOM ficaria acima do ponto de OOM.
+- **Alterar o dashboard não exige reiniciar o Grafana:** o provider relê o diretório a cada 10s e o
+  ConfigMap montado propaga (~20s, zero restarts — medido). Datasources, sim, só são lidos no boot.
+- **`notifications-api` também instrumentado.** É worker (métricas HTTP quase vazias), mas consome
+  `PaymentProcessedEvent` — sem ele o trace da compra apareceria com um ramo cortado no Jaeger.
 - **Prometheus, Grafana e Jaeger sem PVC e com `strategy: Recreate`**, mesmo raciocínio do Redis:
   retenção curta, dados descartáveis, e duas instâncias simultâneas atrás do mesmo Service
   produziriam séries/traces partidos durante o rollout.

@@ -19,31 +19,36 @@ metadata:
     app: prometheus
     app.kubernetes.io/part-of: fiap-cloud-games
 ---
-# Precisa ser ClusterRole e não Role: a service discovery do Prometheus lista nodes e endpoints,
-# que são recursos de escopo de cluster. O `namespaces: [fcg]` no scrape_config abaixo é o que
-# limita o que ele de fato raspa — a permissão é ampla, o uso é restrito.
+# Role NAMESPACED, não ClusterRole: o único kubernetes_sd_config abaixo é `role: pod` restrito a
+# `namespaces: [fcg]`, então a única permissão realmente exercida é list/watch de pods NESTE
+# namespace. Verificado em prometheus_sd_kubernetes_events_total: só o coletor de `pod` registra
+# eventos; nodes, services e endpoints ficam zerados. Conceder cluster-wide o que se usa num
+# namespace só é permissão morta.
+#
+# Se algum dia acrescentarmos `role: node` (métricas do kubelet) ou `role: endpoints`, aí sim será
+# preciso um ClusterRole — e o comentário deve mudar junto.
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
+kind: Role
 metadata:
   name: fcg-prometheus
+  namespace: fcg
   labels:
     app.kubernetes.io/part-of: fiap-cloud-games
 rules:
   - apiGroups: [""]
-    resources: ["nodes", "nodes/metrics", "services", "endpoints", "pods"]
+    resources: ["pods"]
     verbs: ["get", "list", "watch"]
-  - nonResourceURLs: ["/metrics"]
-    verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
+kind: RoleBinding
 metadata:
   name: fcg-prometheus
+  namespace: fcg
   labels:
     app.kubernetes.io/part-of: fiap-cloud-games
 roleRef:
   apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
+  kind: Role
   name: fcg-prometheus
 subjects:
   - kind: ServiceAccount

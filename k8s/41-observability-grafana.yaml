@@ -57,6 +57,11 @@ data:
           # de /var/lib/grafana colidiria com o emptyDir montado na raiz desse diretório (o mount
           # mais profundo esconde o conteúdo do mais raso, e o Grafana não acharia nada).
           path: /etc/grafana/dashboards
+        # NÃO é preciso reiniciar o Grafana ao alterar o dashboard: este provider relê o diretório
+        # a cada updateIntervalSeconds (default 10s) e o kubelet propaga o ConfigMap montado.
+        # Medido: `kubectl apply` do ConfigMap novo reflete na UI em ~20s, com ZERO restarts.
+        # ⚠️ Isso vale só para DASHBOARDS. Os DATASOURCES (ConfigMap grafana-datasources) são lidos
+        # apenas no boot — mexeu neles, faça `kubectl -n fcg rollout restart deploy/grafana`.
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -77,11 +82,6 @@ spec:
     metadata:
       labels:
         app: grafana
-      annotations:
-        # Força o rollout quando o JSON do dashboard muda: sem isto, `kubectl apply` atualizaria só
-        # o ConfigMap e o Grafana continuaria servindo o dashboard antigo até alguém matar o Pod.
-        # (O valor é atualizado à mão quando o dashboard muda de forma relevante.)
-        fcg.dashboard/revision: "1"
     spec:
       securityContext:
         # A imagem do Grafana roda como uid 472 e precisa escrever em /var/lib/grafana.

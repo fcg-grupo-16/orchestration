@@ -1,5 +1,5 @@
 # Provider de dashboards do Grafana no compose. O diretório apontado aqui é montado a partir de
-# k8s/observability/ — o MESMO arquivo que alimenta o ConfigMap do cluster, então dashboard é
+# observability/ — o MESMO arquivo que alimenta o ConfigMap do cluster, então dashboard é
 # um artefato só, versionado uma vez.
 apiVersion: 1
 providers:

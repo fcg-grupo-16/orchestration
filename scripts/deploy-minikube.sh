@@ -55,13 +55,19 @@ kubectl -n fcg rollout status statefulset/mongodb --timeout=180s
 # Redis (cache distribuído, issue #25). Precisa estar Ready antes dos serviços: os initContainers
 # `wait-for-redis` de users-api/catalog-api bloqueiam até a porta 6379 responder.
 kubectl -n fcg rollout status deploy/redis --timeout=180s
-# Observabilidade (issue #27). Não bloqueiam os serviços (nenhum initContainer espera por eles),
-# mas subir antes deixa o Prometheus já raspando quando os pods das APIs ficarem Ready.
-kubectl -n fcg rollout status deploy/prometheus --timeout=180s
-kubectl -n fcg rollout status deploy/grafana --timeout=180s
-kubectl -n fcg rollout status deploy/jaeger --timeout=180s
 for svc in "${SERVICES[@]}"; do
   kubectl -n fcg rollout status "deploy/${svc}" --timeout=180s
+done
+
+# Observabilidade (issue #27) — DEPOIS dos serviços e NÃO-FATAL, de propósito.
+# Nenhum initContainer espera por eles, então nada da plataforma depende do rollout.
+# E as imagens vêm do Docker Hub (grafana/grafana sozinho tem ~684 MB), ao contrário das dos
+# serviços, que são pré-carregadas com `minikube image load`. Num cluster novo com rede modesta o
+# pull pode passar do timeout — sob `set -e`, isso mataria o script e reportaria falha num deploy
+# cuja parte essencial funcionou. Por isso o `|| echo`.
+for obs in prometheus grafana jaeger; do
+  kubectl -n fcg rollout status "deploy/${obs}" --timeout=300s \
+    || echo "AVISO: '${obs}' ainda não está pronto (provavelmente baixando a imagem). A plataforma não depende dele."
 done
 
 echo

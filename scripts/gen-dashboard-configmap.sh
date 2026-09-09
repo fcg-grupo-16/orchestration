@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Regenera k8s/41b-grafana-dashboard.yaml a partir de observability/fcg-overview.json.
 #
-# O ConfigMap é DERIVADO: a fonte da verdade é o JSON em k8s/observability/. Editar o YAML
+# O ConfigMap é DERIVADO: a fonte da verdade é o JSON em observability/. Editar o YAML
 # gerado à mão faz a próxima regeneração descartar a mudança.
 #
 # Usamos block scalar (`|`) em vez de `kubectl create configmap --from-file`, que embute o JSON
@@ -23,15 +23,15 @@ body = "".join("    " + ln if ln.strip() else "\n" for ln in src.read_text().spl
 out.write_text(f"""# GERADO a partir de observability/fcg-overview.json — NÃO editar à mão.
 #
 # ConfigMap com o JSON do dashboard do Grafana, montado em /etc/grafana/dashboards pelo Deployment
-# de k8s/41-observability-grafana.yaml. A FONTE DA VERDADE é o arquivo em k8s/observability/;
+# de k8s/41-observability-grafana.yaml. A FONTE DA VERDADE é o arquivo em observability/;
 # este aqui é derivado dele.
 #
 # Para regenerar depois de editar o dashboard:
 #   ./scripts/gen-dashboard-configmap.sh
 #
-# Depois de alterar o dashboard, lembre de incrementar a annotation `fcg.dashboard/revision` no
-# Deployment do Grafana — senão o `kubectl apply` atualiza só o ConfigMap e o Pod continua
-# servindo o dashboard antigo até alguém matá-lo à mão.
+# Aplicar o ConfigMap novo BASTA: o provider de dashboards do Grafana relê o diretório a cada 10s
+# e o kubelet propaga o ConfigMap montado — a mudança aparece na UI em ~20s, sem restart.
+# (Datasources são diferentes: só são lidos no boot, e exigem rollout restart.)
 apiVersion: v1
 kind: ConfigMap
 metadata:

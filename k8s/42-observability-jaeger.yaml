@@ -42,9 +42,18 @@ spec:
               value: "true"
             - name: SPAN_STORAGE_TYPE
               value: memory
-            # Teto de spans em memória. Sem isto o processo cresce até ser OOMKilled sob carga.
+            # Teto de traces em memória. O NÚMERO IMPORTA: medimos ~62 KiB por trace de 12 spans
+            # (forma dos traces do MassTransit), então 20000 traces custariam ~1,25 GB e o container
+            # seria OOMKilled por volta de 11,5k — ou seja, o teto que existe para EVITAR o OOM
+            # ficaria acima do ponto de OOM e nunca entraria em ação. 5000 traces ≈ 330 MiB de pico,
+            # com folga de GC dentro do limite de 768Mi.
             - name: MEMORY_MAX_TRACES
-              value: "20000"
+              value: "5000"
+            # A imagem all-in-one não deriva GOMEMLIMIT do cgroup (o Prometheus v3 deriva), então o
+            # GC do Go não reage à pressão do limite do container. Sem isto ele estoura em vez de
+            # coletar mais agressivamente perto do teto.
+            - name: GOMEMLIMIT
+              value: "700MiB"
           ports:
             - name: otlp-grpc
               containerPort: 4317

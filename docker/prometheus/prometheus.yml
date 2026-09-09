@@ -5,6 +5,10 @@
 # regra de relabel do cluster deriva de `__meta_kubernetes_pod_label_app`. Isso é o que faz o
 # MESMO dashboard funcionar nos dois ambientes sem alteração.
 #
+# O job_name é `fcg-pods` mesmo não havendo pods aqui: é DELIBERADO. O painel "Saúde da coleta" do
+# dashboard usa `up{job="fcg-pods"}`, e manter o mesmo nome de job nos dois ambientes é o que faz
+# aquele painel funcionar tanto no compose quanto no cluster.
+#
 # Ao acrescentar um serviço aqui, use a porta INTERNA do container (8080), não a publicada no host.
 global:
   scrape_interval: 15s
@@ -21,6 +25,8 @@ scrape_configs:
         labels: { service: catalog-api }
       - targets: ["payments-api:8080"]
         labels: { service: payments-api }
+      - targets: ["notifications-api:8080"]
+        labels: { service: notifications-api }
 
   - job_name: prometheus
     static_configs:

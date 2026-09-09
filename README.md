@@ -284,15 +284,29 @@ versionado. O ConfigMap `k8s/41b-grafana-dashboard.yaml` é **derivado** dele:
 ```
 
 As quatro métricas exigidas pela Fase 3 vêm **todas do mesmo histograma**
-`http_server_request_duration_seconds`, que o ASP.NET Core publica automaticamente — **nenhuma
-métrica customizada foi necessária**:
+`http_server_request_duration_seconds` — **nenhuma métrica customizada foi necessária**.
+
+Sendo preciso: o ASP.NET Core 8+ já instrumenta o `Meter` `Microsoft.AspNetCore.Hosting` com o
+instrumento `http.server.request.duration` por conta própria; o **nome no formato Prometheus** e o
+endpoint `/metrics` só passam a existir quando o serviço adiciona o SDK OpenTelemetry com
+`AddPrometheusExporter()` + `MapPrometheusScrapingEndpoint()` — que é justamente o escopo de
+`users-api#19`, `catalog-api#19` e `payments-api#19`. Os labels usados nas queries
+(`http_response_status_code`, `http_request_method`, `http_route`) são os da convenção semântica
+estável do OpenTelemetry.
+
+> **Nota sobre o `or vector(0)` na taxa de erro.** Sem nenhum 5xx, a série filtrada **não existe**
+> no Prometheus, e vetor vazio dividido por qualquer coisa continua vazio — sem esse guarda, o
+> painel mostraria `No data` justamente quando a plataforma está saudável, visualmente idêntico a
+> "a stack quebrou". O `clamp_min` no denominador resolve outro problema (o `NaN` de 0/0 quando o
+> tráfego cessa); os dois são necessários.
+
 
 | Painel | Métrica exigida | PromQL |
 |---|---|---|
 | Latência p50/p95/p99 por serviço | **latência** | `histogram_quantile(0.95, sum by (le, service) (rate(..._bucket[5m])))` |
 | Throughput por serviço | **contagem de requisições** | `sum by (service) (rate(..._count[5m]))` |
 | Requisições por status code | **contagem por status HTTP** | `sum by (http_response_status_code) (rate(..._count[5m]))` |
-| Taxa de erro 5xx | **taxa de erros** | `100 * sum(rate(..._count{http_response_status_code=~"5.."}[5m])) / sum(rate(..._count[5m]))` |
+| Taxa de erro 5xx | **taxa de erros** | `100 * (sum(rate(..._count{...5xx}[5m])) or vector(0)) / clamp_min(sum(rate(..._count[5m])), 0.001)` |
 
 > ⚠️ **Os painéis ficam vazios até a instrumentação dos serviços entrar.** Este repositório entrega
 > a stack e o contrato de coleta; o endpoint `/metrics` nasce em `users-api#19`, `catalog-api#19` e
@@ -301,9 +315,22 @@ métrica customizada foi necessária**:
 > rede estão certas. Acompanhe em **Status → Targets** no Prometheus, ou pelo painel *Saúde da
 > coleta* do próprio dashboard.
 >
-> Ao instrumentar, **confirme o nome real da métrica** no autocomplete do Prometheus: dependendo da
-> versão do exportador ela pode sair como `http_server_request_duration_seconds` ou
-> `http_server_duration_seconds`. Se divergir, ajuste as queries do dashboard e regenere o ConfigMap.
+> ⚠️ **Ao instrumentar, confirme o nome real da métrica** no autocomplete do Prometheus: dependendo
+> da versão do exportador ela pode sair como `http_server_request_duration_seconds` ou
+> `http_server_duration_seconds`. **9 dos 10 painéis dependem desse nome** (a variável `service`
+> inclusive), então uma divergência esvazia o dashboard inteiro de uma vez. Se acontecer:
+>
+> ```bash
+> # 1. veja o nome real
+> curl -s localhost:8081/metrics | grep -m1 '^# TYPE.*duration'
+> # 2. troque em todas as queries
+> sed -i '' 's/http_server_request_duration_seconds/<nome-real>/g' observability/fcg-overview.json
+> # 3. regenere o ConfigMap e reaplique
+> ./scripts/gen-dashboard-configmap.sh && kubectl apply -f k8s/41b-grafana-dashboard.yaml
+> ```
+>
+> Não é preciso reiniciar o Grafana: o provider relê o diretório a cada 10s (a mudança aparece em
+> ~20s). Só os **datasources** exigem `rollout restart`.
 
 ```bash
 # Verificar a coleta
