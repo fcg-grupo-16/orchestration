@@ -7,8 +7,7 @@
 #   ├── orchestration/   (este repo)
 #   ├── users-api/
 #   ├── catalog-api/
-#   ├── payments-api/
-#   └── notifications-api/
+#   └── payments-api/
 #
 # Subir tudo:   docker compose up --build
 # Derrubar:     docker compose down -v
@@ -263,33 +262,6 @@ services:
       - "8083:8080"
     restart: unless-stopped
 
-  notifications-api:
-    build:
-      context: ../notifications-api
-    image: notifications-api:local
-    container_name: fcg-notifications-api
-    depends_on:
-      mongodb:
-        condition: service_healthy
-      rabbitmq:
-        condition: service_healthy
-    environment:
-      ASPNETCORE_ENVIRONMENT: Production
-      RabbitMq__Host: "rabbitmq"
-      RabbitMq__Username: "guest"
-      RabbitMq__Password: "guest"
-      # Histórico de notificações (notificationsdb) — consumido a partir da notifications-api#2.
-      # ?replicaSet=rs0 mantém a paridade da connection string com os demais serviços.
-      MongoDbSettings__ConnectionString: "mongodb://mongodb:27017/?replicaSet=rs0"
-      MongoDbSettings__DatabaseName: "notificationsdb"
-      # Traces distribuídos (issue #27). Worker sem HTTP: o valor aqui são os traces, não
-      # as métricas — ele consome PaymentProcessedEvent e fecha o ramo do trace da compra.
-      OTEL_SERVICE_NAME: "notifications-api"
-      OTEL_EXPORTER_OTLP_ENDPOINT: "http://jaeger:4317"
-      OTEL_EXPORTER_OTLP_PROTOCOL: "grpc"
-    ports:
-      - "8084:8080"
-    restart: unless-stopped
 
 volumes:
   mongo-data:

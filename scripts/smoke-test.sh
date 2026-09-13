@@ -65,4 +65,6 @@ INNER
 
 echo
 echo "Dica: veja os e-mails simulados e a decisão de pagamento nos logs:"
-echo "  docker compose logs notifications-api payments-api"
+echo "  docker compose logs payments-api"
+# A notifications-function NÃO está no compose: o scale-to-zero exige KEDA, que só existe no
+# minikube. Ver README (issue #29).

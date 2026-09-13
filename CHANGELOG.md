@@ -5,6 +5,77 @@ Todas as mudanças relevantes deste repositório de orquestração são document
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/)
 e o versionamento adere a [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [0.15.0] - 2026-09-13
+
+### Adicionado
+- **KEDA 2.20.2 e scale-to-zero da `notifications-function`**, fechando o requisito de *Migração para
+  Arquitetura Serverless*: o Deployment fica em **zero réplica** em repouso e o KEDA o acorda quando
+  entra mensagem na fila, devolvendo-o a zero quando ela esvazia. Medido no cluster em **duas
+  execuções**, e os números variam de propósito — não são especificação: o pod nasceu **6s** e **11s**
+  depois do evento (limite superior é o `pollingInterval: 15`, somado à partida emulada da imagem
+  amd64), `Executed 'Functions.UserCreatedFunction' (Succeeded, Duration=3080ms)`, fila drenada, e
+  voltou a 0 réplica **63s** e **71s** depois do disparo (`cooldownPeriod: 60`). (#29)
+- `k8s/50-keda-notifications.yaml`: `TriggerAuthentication` + `ScaledObject` com **dois** triggers
+  (uma fila cada; o KEDA escala pelo maior). (#29)
+- `k8s/24-notifications-function.yaml`: Deployment e ConfigMap da Function, **cópia** de
+  `deploy/k8s/` do repo `notifications-function` — o `kubectl apply -R -f k8s/` daqui nunca aplica o
+  diretório do outro repo, então sem a cópia o `ScaledObject` apontaria para um alvo inexistente.
+  Deployment **sem `replicas`** de propósito: quem controla a contagem é o KEDA. (#29)
+- **`scripts/keda-test.sh`**: matriz de aceite do ciclo 0→1→0 contra o cluster. Existe pela mesma
+  razão do `gateway-test.sh`: o `kubeconform` do CI **pula** os CRs do KEDA (sem schema publicado),
+  e o modo de falha engana — o `ScaledObject` fica `Ready=False` com o Deployment parado em 0
+  réplica, o que de longe parece scale-to-zero funcionando, mas nada acorda quando chega mensagem.
+  A asserção decisiva é de **execução** (`Executed ... Succeeded`), não de "o pod subiu". São 12
+  asserções, e o script remove o usuário que ele mesmo cadastra — medido: `usuarios` e
+  `refresh_tokens` idênticos antes e depois de uma execução completa. (#29)
+- Credencial selada `keda-rabbitmq-secret` para o scaler, com **FQDN**. (#29)
+
+### Modificado
+- `scripts/deploy-minikube.sh`: instala o KEDA por **URL pinada** antes do `kubectl apply` (o
+  `ScaledObject` depende dos CRDs), e builda a Function com **`--platform linux/amd64`** num laço
+  `FUNCTIONS` separado do de `SERVICES`. (#29)
+- `.github/workflows/ci.yml`: a lacuna conhecida do `kubeconform` passou a citar também os CRs do
+  KEDA (`ScaledObject`/`TriggerAuthentication`), não só os do Kong. (#29)
+- `docker/rabbitmq/README.md`: a prosa escrita antevendo esta remoção foi para o passado. A decisão
+  de dead-letter **por policy** e o exchange intermediário seguem valendo — só mudou o sujeito: quem
+  sofreria com divergência de equivalência agora são os **publishers** (`users-api`, `payments-api`
+  via MassTransit), não o serviço removido. (#29)
+
+### Removido
+- **`notifications-api`** da plataforma: manifesto `k8s/23-notifications-api.yaml`, serviço do
+  `docker-compose.yml`, target do Prometheus do compose, `SERVICES` do deploy, secret selado e dica
+  de logs do smoke test. O repositório continua existindo, marcado como **deprecado** no README. As
+  entradas históricas do CHANGELOG **não** foram reescritas. (#29)
+
+### Notas de implementação
+- **A imagem da Function exige `--platform linux/amd64`.** A base oficial
+  `azure-functions/dotnet-isolated` publica **só** `linux/amd64` — conferido em `4-dotnet-isolated8.0`,
+  `9.0`, `10.0`, `-appservice` e `-mariner`; não existe variante arm64 em tag nenhuma. Sem
+  `--platform` o build falha com `no match for platform in manifest`. A imagem amd64 **executa** no
+  nó arm64 porque o minikube traz `binfmt` com handler `qemu-x86_64` habilitado (verificado: pod de
+  teste imprimiu `x86_64` e saiu com 0). Custo: partida emulada, mais lenta que os demais serviços —
+  que são todos arm64 nativos (`dotnet/sdk:10.0` é multi-arch).
+- **A credencial do scaler precisa de FQDN, e não é a mesma entrada dos serviços.** Reaproveitar
+  `notifications-function-secret.RabbitMqConnection` falhou: o pod do **operador** do KEDA roda no
+  namespace `keda`, onde o nome curto não resolve — `dial tcp: lookup rabbitmq on 10.96.0.10:53: no
+  such host`. Confirmado por DNS: de `fcg` o nome curto resolve; de `keda` é `NXDOMAIN` e só o FQDN
+  responde. Os dois segredos carregam o **mesmo** usuário e senha, e diferem apenas no host.
+- **Trocar só o `TriggerAuthentication` não reconstrói o scaler.** O `kubectl apply` responde
+  `scaledobject ... unchanged` e o operador segue com o scaler em cache, repetindo o erro antigo (5
+  erros citando o host velho nos 90s seguintes à correção do secret). É preciso recriar o
+  `ScaledObject`.
+- **O HPA criado pelo KEDA aparece com `minReplicas: 1`, e está correto.** O HPA do Kubernetes não
+  escala a zero; a transição 0↔1 é do operador do KEDA, por fora dele. Em repouso, `ScalingActive=False`
+  com *"scaling is disabled since the replica count of the target is zero"* é o estado normal.
+- **Com `AzureWebJobsStorage` vazio o host do Functions reporta `Unhealthy` para sempre**, e não é
+  falha: medido, `azure.functions.webjobs.storage` é a **única** sub-checagem não saudável
+  (`web_host.lifecycle` e `script_host.lifecycle` = `Healthy`), e a função executa normalmente.
+  Configurar um Storage Account só para silenciar o log seria pagar uma dependência por um sintoma.
+- **Ordem da remoção importou.** O `notifications-api` só saiu depois de a Function ter
+  comprovadamente consumido um evento real. Com os dois de pé eles são *competing consumers* da mesma
+  fila e cada e-mail sai por um dos dois de forma imprevisível — durante a validação isto apareceu de
+  fato (`consumers 2` por fila), e a medição só ficou limpa depois de zerar o `notifications-api`.
+
 ## [0.14.0] - 2026-09-13
 
 ### Adicionado

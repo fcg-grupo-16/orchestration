@@ -1,0 +1,84 @@
+# notifications-function — a Azure Function serverless que SUBSTITUI o notifications-api (#29).
+#
+# ⚠️ PROVENIÊNCIA: Deployment e ConfigMap são cópia fiel de `deploy/k8s/` do repo
+# notifications-function (entregue em notifications-function#5). Vivem AQUI porque o
+# `deploy-minikube.sh` aplica `kubectl apply -R -f k8s/` deste repositório e NUNCA aplica o
+# diretório do outro repo — sem esta cópia o Deployment não existiria no cluster e o
+# ScaledObject de 50-keda-notifications.yaml apontaria para um alvo inexistente.
+# Ao alterar lá, replicar aqui (mesma dívida de sincronia que o ConfigMap do users-api).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: notifications-function-config
+  namespace: fcg
+  labels:
+    app: notifications-function
+    app.kubernetes.io/part-of: fiap-cloud-games
+data:
+  FUNCTIONS_WORKER_RUNTIME: "dotnet-isolated"
+  AzureFunctionsJobHost__Logging__Console__IsEnabled: "true"
+  # Vazio funciona: nenhum trigger desta Function depende de Storage Account (os dois são
+  # RabbitMQTrigger), e o host indexa e EXECUTA as funções sem ele — medido no cluster:
+  # `Executed 'Functions.UserCreatedFunction' (Succeeded, Duration=3080ms)`.
+  #
+  # ⚠️ Efeito colateral permanente, e não é falha: com Storage vazio o host do Functions reporta
+  # `Process reporting unhealthy: Unhealthy` em loop no log. Medido quais sub-checagens:
+  #     azure.functions.web_host.lifecycle    -> Healthy
+  #     azure.functions.script_host.lifecycle -> Healthy
+  #     azure.functions.webjobs.storage       -> Unhealthy   <-- a única, e é esta linha aqui
+  # Ou seja: o "unhealthy" é o próprio health check de Storage, não a Function. Configurar um
+  # Storage Account só para silenciar o log seria pagar uma dependência por um sintoma cosmético.
+  AzureWebJobsStorage: ""
+
+  MongoDbSettings__DatabaseName: "notificationsdb"
+
+  # Jaeger: conferido neste cluster — Service `jaeger`, porta 4317 (otlp-grpc).
+  OTEL_SERVICE_NAME: "notifications-function"
+  OTEL_EXPORTER_OTLP_ENDPOINT: "http://jaeger:4317"
+  OTEL_EXPORTER_OTLP_PROTOCOL: "grpc"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notifications-function
+  namespace: fcg
+  labels:
+    app: notifications-function
+    app.kubernetes.io/part-of: fiap-cloud-games
+spec:
+  # SEM `replicas` de propósito: quem controla a contagem é o KEDA. Declarar aqui faria cada
+  # `kubectl apply` sobrescrever o scale-to-zero e ressuscitar um pod ocioso.
+  selector:
+    matchLabels:
+      app: notifications-function
+  template:
+    metadata:
+      labels:
+        app: notifications-function
+      annotations:
+        # Sem scrape: com scale-to-zero o pod vive segundos, incompatível com o pull do Prometheus.
+        prometheus.io/scrape: "false"
+    spec:
+      # Sem initContainer de espera pelo broker: o KEDA só cria o pod quando JÁ HÁ mensagem na
+      # fila, ou seja, com o RabbitMQ comprovadamente no ar.
+      containers:
+        - name: notifications-function
+          image: notifications-function:local
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: notifications-function-config
+            # SealedSecret de 05-sealed-secrets.yaml: RabbitMqConnection,
+            # MongoDbSettings__ConnectionString, Redis__ConnectionString.
+            - secretRef:
+                name: notifications-function-secret
+          resources:
+            requests:
+              cpu: 100m
+              memory: 192Mi
+            limits:
+              # Host de Functions + isolated worker: dois processos .NET no mesmo container.
+              cpu: 500m
+              memory: 640Mi
+          # Sem probe HTTP: a função é acionada por fila e o host não expõe endpoint de saúde —
+          # uma probe HTTP falharia e reiniciaria o pod em loop.

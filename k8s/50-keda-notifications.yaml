@@ -1,0 +1,106 @@
+# KEDA — scale-to-zero da notifications-function (#29).
+#
+# É o entregável do requisito "Migração para Arquitetura Serverless": o notifications-api ficava
+# 24/7 no ar aguardando eventos esporádicos. Aqui o Deployment fica em ZERO réplica e o KEDA o
+# acorda quando entra mensagem na fila, devolvendo-o a zero quando ela esvazia.
+#
+# Por que Functions-em-container + KEDA, e não o plano Consumption da Azure: a documentação do
+# binding é explícita — RabbitMQ só é suportado em Elastic Premium e Dedicated, planos de instância
+# reservada, SEM escala a zero real. Rodar o mesmo host de Functions em container com o KEDA mantém
+# a Function de verdade (mesmo runtime, mesmo binding, mesmo host.json) e torna o scale-to-zero real.
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: keda-trigger-auth-rabbitmq
+  namespace: fcg
+  labels:
+    app.kubernetes.io/part-of: fiap-cloud-games
+spec:
+  # ⚠️ A credencial do scaler precisa de FQDN, e por isso NÃO é a mesma entrada usada pelos serviços.
+  #
+  # Primeira tentativa aqui foi reaproveitar `notifications-function-secret.RabbitMqConnection`, para
+  # não criar credencial nova. FALHOU, e a medição diz por quê: o pod do OPERADOR do KEDA roda no
+  # namespace `keda`, onde o nome curto `rabbitmq` não resolve:
+  #   Ready=False  ScaledObjectCheckFailed
+  #   "error establishing connection to RabbitMQ: dial tcp: lookup rabbitmq on 10.96.0.10:53:
+  #    no such host"
+  # O valor dos serviços está correto PARA ELES (rodam em `fcg`); é o contexto do consumidor que
+  # muda. Daí um segredo próprio com `rabbitmq.fcg.svc.cluster.local`.
+  #
+  # Mas SELADO, ao contrário do passo a passo da issue, que versionava `amqp://guest:guest@...` em
+  # texto claro — seria a única credencial em claro do repositório. Gerado por
+  # `scripts/seal-secrets.sh` (RABBIT_CONNECTION_FQDN) e versionado em 05-sealed-secrets.yaml.
+  # ⚠️ AO TROCAR ESTA CREDENCIAL, RECRIE O ScaledObject. Medido: alterar apenas o
+  # TriggerAuthentication NÃO faz o KEDA reconstruir o scaler — o `kubectl apply` responde
+  # `scaledobject ... unchanged` e o operador segue usando o scaler em cache, repetindo o erro
+  # antigo (5 erros citando o host velho nos 90s seguintes à correção do secret). Depois de
+  # `kubectl delete scaledobject notifications-function` e reaplicar: Ready=True e HPA criado.
+  #
+  # `vhostName: /` nos triggers abaixo é redundante com a barra final da URI (a doc diz que
+  # `vhostName` SOBRESCREVE o vhost da connection string, e o default é o mesmo "/"), mas fica
+  # explícito de propósito — a mesma doc exige a barra final quando a URI não traz vhost.
+  secretTargetRef:
+    - parameter: host
+      name: keda-rabbitmq-secret
+      key: host
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: notifications-function
+  namespace: fcg
+  labels:
+    app: notifications-function
+    app.kubernetes.io/part-of: fiap-cloud-games
+spec:
+  scaleTargetRef:
+    # Deployment de k8s/24-notifications-function.yaml.
+    name: notifications-function
+  # ESCALA A ZERO: o coração do requisito de otimização de recursos.
+  #
+  # NÃO "conserte" o HPA que o KEDA cria a partir disto: ele aparece com `minReplicas: 1`, e está
+  # certo. O HPA do Kubernetes não sabe escalar a zero — a transição 0<->1 (ativação) é feita pelo
+  # OPERADOR do KEDA, por fora do HPA, e só de 1 para cima o HPA assume. Daí as condições que se vê
+  # em repouso, ambas normais e medidas:
+  #     HPA:          ScalingActive=False  "scaling is disabled since the replica count ... is zero"
+  #     ScaledObject: Ready=True, Active=False (ScalerNotActive, fila vazia)
+  minReplicaCount: 0
+  maxReplicaCount: 5
+  # Intervalo entre consultas do KEDA ao broker: 15s acorda rápido o bastante para a demo ao vivo
+  # sem martelar o RabbitMQ.
+  pollingInterval: 15
+  # Tempo com a fila vazia antes de voltar a zero. 60s cabe na gravação e evita thrash 0->1->0.
+  cooldownPeriod: 60
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleDown:
+          # Sem janela de estabilização: o pod deve desaparecer durante a demonstração.
+          stabilizationWindowSeconds: 0
+  # DOIS triggers, um por fila. O KEDA escala pelo MAIOR deles.
+  # Nomes conferidos nos atributos [RabbitMQTrigger] do código da Function, não na issue.
+  #
+  # NOTA sobre `mode: QueueLength` em AMQP: `excludeUnacknowledged` só existe no protocolo http,
+  # então em amqp a contagem INCLUI mensagens não confirmadas. Aqui isso é desejável — mantém >=1
+  # réplica enquanto a mensagem está sendo processada, em vez de derrubar o pod no meio do trabalho.
+  triggers:
+    - type: rabbitmq
+      metadata:
+        protocol: amqp
+        queueName: notifications-user-created
+        mode: QueueLength
+        # 1 mensagem pendente já justifica 1 réplica: tarefa curta, latência importa mais que
+        # densidade. `value: 5` significaria "só sobe ao acumular 5", que não é o que queremos.
+        value: "1"
+        vhostName: /
+      authenticationRef:
+        name: keda-trigger-auth-rabbitmq
+    - type: rabbitmq
+      metadata:
+        protocol: amqp
+        queueName: notifications-payment-processed
+        mode: QueueLength
+        value: "1"
+        vhostName: /
+      authenticationRef:
+        name: keda-trigger-auth-rabbitmq

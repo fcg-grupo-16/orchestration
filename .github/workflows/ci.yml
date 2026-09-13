@@ -6,7 +6,8 @@ name: CI
 #   3) scripts shell   -> `bash -n` (parse, sem executar)
 #   4) YAML lint       -> estilo (não-bloqueante por enquanto)
 #
-# LACUNA CONHECIDA: o kubeconform PULA os CRDs do Kong (KongPlugin/KongConsumer) por não
+# LACUNA CONHECIDA: o kubeconform PULA todos os CRs de terceiros — os do Kong
+# (KongPlugin/KongConsumer) e os do KEDA (ScaledObject/TriggerAuthentication) — por não
 # ter schema conhecido — um campo inexistente num plugin passa verde aqui. A validação real
 # do gateway é comportamental, contra um cluster: scripts/gateway-test.sh.
 # Rede de segurança para mudanças de infra: pega YAML quebrado ANTES do merge.

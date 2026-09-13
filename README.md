@@ -1,4 +1,4 @@
-# FIAP Cloud Games (FCG) — Orquestração (Fase 2)
+# FIAP Cloud Games (FCG) — Orquestração (Fase 3)
 
 Repositório central de **orquestração** da plataforma FIAP Cloud Games, refatorada de um
 monólito .NET para uma arquitetura de **microsserviços orientada a eventos**.
@@ -18,7 +18,8 @@ seu próprio repositório.
 | **UsersAPI** | [`users-api`](https://github.com/fcg-grupo-16/users-api) | Cadastro, autenticação (JWT) e autorização | publica `UserCreatedEvent` |
 | **CatalogAPI** | [`catalog-api`](https://github.com/fcg-grupo-16/catalog-api) | CRUD de jogos, biblioteca e início da compra | publica `OrderPlacedEvent`; consome `PaymentProcessedEvent` |
 | **PaymentsAPI** | [`payments-api`](https://github.com/fcg-grupo-16/payments-api) | Processa (simula) o pagamento | consome `OrderPlacedEvent`; publica `PaymentProcessedEvent` |
-| **NotificationsAPI** | [`notifications-api`](https://github.com/fcg-grupo-16/notifications-api) | "Envia" e-mails (log no console) | consome `UserCreatedEvent` e `PaymentProcessedEvent` |
+| **NotificationsFunction** | [`notifications-function`](https://github.com/fcg-grupo-16/notifications-function) | "Envia" e-mails (log no console), **serverless com scale-to-zero** | consome `UserCreatedEvent` e `PaymentProcessedEvent` |
+| ~~NotificationsAPI~~ | [`notifications-api`](https://github.com/fcg-grupo-16/notifications-api) | **DEPRECADO na Fase 3** — substituído pela Function acima (#29) | — |
 
 **Stack:** .NET 10 · MongoDB (database por serviço) · **Redis** (cache distribuído) · RabbitMQ + MassTransit · **Prometheus + Grafana + Jaeger** (observabilidade) · Docker · Kubernetes.
 
@@ -72,7 +73,7 @@ fiap/
 ├── users-api/
 ├── catalog-api/
 ├── payments-api/
-└── notifications-api/
+└── notifications-function/
 ```
 
 ```bash
@@ -80,7 +81,7 @@ gh repo clone fcg-grupo-16/orchestration
 gh repo clone fcg-grupo-16/users-api
 gh repo clone fcg-grupo-16/catalog-api
 gh repo clone fcg-grupo-16/payments-api
-gh repo clone fcg-grupo-16/notifications-api
+gh repo clone fcg-grupo-16/notifications-function
 ```
 
 ## Executar com Docker Compose
@@ -105,7 +106,6 @@ Sobe RabbitMQ, MongoDB e os 4 microsserviços. Portas expostas no host:
 > duplicaria a configuração do gateway), mas significa que **um cliente escrito contra o compose
 > pode quebrar no cluster**. Ao desenvolver contra o compose, trate o token como obrigatório.
 | payments-api | http://localhost:8083 | (worker) |
-| notifications-api | http://localhost:8084 | (worker) |
 | RabbitMQ Management | http://localhost:15672 | guest / guest |
 | MongoDB | mongodb://localhost:27017/?replicaSet=rs0 | — |
 | Redis | localhost:6379 | — |
@@ -127,7 +127,7 @@ Sobe RabbitMQ, MongoDB e os 4 microsserviços. Portas expostas no host:
 
 ```bash
 ./scripts/smoke-test.sh          # requer jq
-docker compose logs payments-api notifications-api
+docker compose logs payments-api
 ```
 
 Derrubar tudo:
@@ -173,7 +173,7 @@ Faz o build das imagens `:local`, carrega no minikube e aplica os manifestos.
 minikube start
 
 # Build + carga das imagens no cluster
-for s in users-api catalog-api payments-api notifications-api; do
+for s in users-api catalog-api payments-api; do
   docker build -t "$s:local" "../$s"
   minikube image load "$s:local"
 done
@@ -359,6 +359,84 @@ Remover:
 > O `PersistentVolumeClaim` gerado pelo `volumeClaimTemplates` **não** é removido por
 > `kubectl delete -R -f k8s/` — os dados ficam para trás de propósito. Para zerar de vez
 > num ambiente de demo: `kubectl -n fcg delete pvc mongo-data-mongodb-0`.
+
+## Serverless — `notifications-function` com scale-to-zero (KEDA)
+
+O `notifications-api` ficava **24/7 no ar** aguardando eventos esporádicos. Na Fase 3 ele foi
+**substituído** pela [`notifications-function`](https://github.com/fcg-grupo-16/notifications-function),
+uma Azure Function que roda em container no cluster com **KEDA 2.20.2**: em repouso o Deployment
+fica em **zero réplica** (custo computacional zero) e o KEDA o acorda quando entra mensagem na fila.
+
+### Por que Functions + KEDA, e não o plano Consumption da Azure
+
+A documentação do binding é explícita: o trigger de **RabbitMQ não é suportado** nos planos
+Consumption/Flex Consumption — só em Elastic Premium e Dedicated, que são de **instância reservada** e
+portanto **sem escala a zero real**. Rodar o mesmo host de Functions em container com o KEDA mantém a
+Function de verdade (mesmo runtime, mesmo binding, mesmo `host.json`) e torna o scale-to-zero real.
+É decisão de arquitetura, não atalho.
+
+### Como demonstrar o ciclo 0 → 1 → 0
+
+```bash
+# 1) OCIOSO — o requisito de otimização de recursos
+kubectl -n fcg get deploy notifications-function     # READY 0/0
+kubectl -n fcg get pods -l app=notifications-function # No resources found
+
+# 2) DISPARO — evento real pelo gateway (em outro terminal, observe com -w)
+kubectl -n kong port-forward svc/kong-kong-proxy 8000:80 &
+curl -s -X POST -H 'Host: api.fcg.local' -H 'Content-Type: application/json' \
+  -d '{"nome":"Serverless","email":"demo@fcg.com","senha":"Teste@123456"}' \
+  http://localhost:8000/api/v1/usuarios
+
+# 3) A Function processou?
+kubectl -n fcg logs -l app=notifications-function --tail=50
+
+# 4) A fila zerou?
+kubectl -n fcg exec deploy/rabbitmq -- rabbitmqctl list_queues name messages | grep notifications
+```
+
+Ou, de uma vez, a matriz de aceite (**12 asserções**):
+
+```bash
+./scripts/keda-test.sh
+```
+
+Ela existe pela mesma razão do `gateway-test.sh`: o `kubeconform` do CI **pula** os CRs do KEDA, e o
+modo de falha engana — o `ScaledObject` fica `Ready=False` com o Deployment parado em 0 réplica, o que
+de longe parece scale-to-zero funcionando, mas nada acorda quando chega mensagem. A asserção decisiva
+é de **execução** (`Executed ... Succeeded`), não de "o pod subiu". O script apaga o usuário que ele
+mesmo cadastra.
+
+### O que foi medido
+
+| | valor |
+|---|---|
+| Pod acordado após o evento | **6s** e **11s** em duas execuções (teto é o `pollingInterval: 15`, mais a partida emulada) |
+| Processamento | `Executed 'Functions.UserCreatedFunction' (Succeeded, Duration=3080ms)` |
+| Volta a zero réplica | **63s** e **71s** após o disparo (`cooldownPeriod: 60`) |
+| Resíduo do teste no Mongo | zero (`usuarios` e `refresh_tokens` idênticos antes e depois) |
+
+Os tempos **variam** de execução para execução; não são especificação.
+
+### Ressalvas que valem conhecer
+
+- **A imagem exige `--platform linux/amd64`.** A base `azure-functions/dotnet-isolated` publica só
+  `linux/amd64` — conferido em `4-dotnet-isolated8.0`, `9.0`, `10.0`, `-appservice` e `-mariner`. Num
+  host arm64 o build sem `--platform` falha com `no match for platform in manifest`. A imagem amd64
+  **executa** no nó arm64 porque o minikube traz `binfmt` com handler `qemu-x86_64` (verificado: pod
+  de teste imprimiu `x86_64`). O custo é partida mais lenta; os outros serviços são arm64 nativos.
+  O `deploy-minikube.sh` já trata isso num laço `FUNCTIONS` separado.
+- **O host do Functions reporta `Unhealthy` para sempre, e não é falha.** Com `AzureWebJobsStorage`
+  vazio (nenhum trigger depende de Storage), `azure.functions.webjobs.storage` é a **única**
+  sub-checagem não saudável — `web_host.lifecycle` e `script_host.lifecycle` ficam `Healthy` e a
+  função executa normalmente.
+- **O HPA criado pelo KEDA aparece com `minReplicas: 1`, e está correto.** O HPA do Kubernetes não
+  escala a zero: a transição 0↔1 é do operador do KEDA, por fora dele.
+- **A credencial do scaler usa FQDN** (`rabbitmq.fcg.svc.cluster.local`) porque o operador do KEDA
+  roda no namespace `keda`, onde o nome curto não resolve. É a mesma credencial dos serviços, selada
+  à parte só por causa do host.
+- **A `notifications-function` não está no `docker-compose.yml`**: scale-to-zero exige KEDA, que só
+  existe no minikube. Para validar o código localmente, use `func start` no repo da Function.
 
 ## Observabilidade — escolhemos a **Opção A** (Prometheus + Grafana)
 
@@ -626,7 +704,7 @@ Todo **push na `main`** e **todo pull request** dispara o workflow
 | Step | Comando | O que pega |
 |---|---|---|
 | docker-compose | `docker compose -f docker-compose.yml config -q` | sintaxe/estrutura do compose |
-| kubeconform | `kubeconform -strict -summary -ignore-missing-schemas -verbose k8s/` | schema rigoroso dos manifestos (offline) — **mas ver a ressalva abaixo sobre os CRDs do Kong** |
+| kubeconform | `kubeconform -strict -summary -ignore-missing-schemas -verbose k8s/` | schema rigoroso dos manifestos (offline) — **mas ver a ressalva abaixo sobre os CRs do Kong e do KEDA** |
 | yamllint | `yamllint -d relaxed …` | estilo de YAML (**não-bloqueante** por enquanto) |
 
 > **Por que kubeconform e não `kubectl --dry-run=client`?** Apesar do nome, o dry-run
@@ -642,18 +720,29 @@ Todo **push na `main`** e **todo pull request** dispara o workflow
 > falso-negativo em CRDs sem schema conhecido — é o caso do `SealedSecret`
 > (`k8s/05-sealed-secrets.yaml`), que o kubeconform **pula** em vez de reprovar.
 >
-> ⚠️ **O mesmo vale para os CRDs do Kong, e a consequência é maior.** `KongPlugin` e
-> `KongConsumer` (`k8s/gateway/`) são **pulados**: dos 47 recursos, 11 são skipped e só o Secret e
-> os 3 Ingresses de `k8s/gateway/` chegam a ser validados. Um campo inexistente ou um typo em
-> `claims_to_verify` passa **verde no CI** — e o modo de falha é traiçoeiro: o Kong rejeita o
-> plugin, o gateway devolve 401 sem token (parece funcionar) e devolve 401 **também com token
-> válido**. A validação real do gateway é o `scripts/gateway-test.sh`, contra um cluster.
+> ⚠️ **O mesmo vale para os CRs do Kong e do KEDA, e a consequência é maior.** Dos **48**
+> recursos de `k8s/`, **13** são pulados: os 6 `SealedSecret`, os 4 `KongPlugin`, o
+> `KongConsumer`, e o `ScaledObject` + `TriggerAuthentication` do KEDA. Em `k8s/gateway/` só o Secret
+> e os 3 Ingresses chegam a ser validados; **`k8s/50-keda-notifications.yaml` é invisível ao CI por
+> inteiro** — os dois documentos dele são CRs.
+>
+> Os dois modos de falha enganam, cada um do seu jeito:
+>
+> - **Kong:** um typo em `claims_to_verify` passa verde, o Kong rejeita o plugin, e o gateway devolve
+>   401 sem token (parece funcionar) e 401 **também com token válido**.
+> - **KEDA:** um campo errado no scaler passa verde, o `ScaledObject` fica `Ready=False` e o
+>   Deployment segue parado em **0 réplica** — que de longe é indistinguível de scale-to-zero
+>   funcionando. Só que nada acorda quando chega mensagem.
+>
+> A validação real é comportamental, contra um cluster: `scripts/gateway-test.sh` para o gateway e
+> `scripts/keda-test.sh` para o scale-to-zero.
 
 Para reproduzir o CI localmente:
 
 ```bash
 docker compose -f docker-compose.yml config -q             # step 1
 kubeconform -strict -summary -ignore-missing-schemas k8s/  # step 2 (brew install kubeconform)
+bash -n scripts/*.sh                                       # step 3 (sintaxe dos scripts)
 ```
 
 ## Como contribuir
@@ -689,4 +778,4 @@ Para o desenvolvimento local com minikube continuamos usando a tag `:local` (bui
 
 ## Repositórios do grupo
 
-- [orchestration](https://github.com/fcg-grupo-16/orchestration) · [users-api](https://github.com/fcg-grupo-16/users-api) · [catalog-api](https://github.com/fcg-grupo-16/catalog-api) · [payments-api](https://github.com/fcg-grupo-16/payments-api) · [notifications-api](https://github.com/fcg-grupo-16/notifications-api)
+- [orchestration](https://github.com/fcg-grupo-16/orchestration) · [users-api](https://github.com/fcg-grupo-16/users-api) · [catalog-api](https://github.com/fcg-grupo-16/catalog-api) · [payments-api](https://github.com/fcg-grupo-16/payments-api) · [notifications-function](https://github.com/fcg-grupo-16/notifications-function) · [notifications-api](https://github.com/fcg-grupo-16/notifications-api) (deprecado)
