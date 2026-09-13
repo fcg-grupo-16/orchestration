@@ -211,7 +211,7 @@ O Ingress NGINX anterior (dois hosts, sem validação de token) foi **removido**
                         └──────┬───────────────────────────┬───────┘
                      PÚBLICAS │                           │ PROTEGIDAS (jwt + rate-limit)
                               ▼                           ▼
-   POST /api/v1/auth/**  → users-api:80     GET/PUT/DELETE /api/v1/usuarios/** → users-api:80
+   /api/v1/auth/**       → users-api:80     GET/PUT/DELETE /api/v1/usuarios/** → users-api:80
    POST /api/v1/usuarios → users-api:80     /api/v1/jogos/**                   → catalog-api:80
                                             /api/v1/biblioteca/**              → catalog-api:80
                                             /api/v1/pedidos/**                 → catalog-api:80
@@ -221,6 +221,19 @@ O Ingress NGINX anterior (dois hosts, sem validação de token) foi **removido**
 **Público sem token:** `login`, `refresh` e o **cadastro** (`POST /api/v1/usuarios`) — são como o
 usuário *obtém* um token; exigir token aqui seria um deadlock. O cadastro tem rota própria
 (`pathType: Exact` + `konghq.com/methods: POST`), então `GET /api/v1/usuarios` sem token dá 401.
+
+⚠️ **O prefixo `/api/v1/auth/` NÃO é restrito por método**, ao contrário do cadastro: qualquer verbo e
+qualquer subpath sob ele chegam ao `users-api` sem token (medido: `PUT /api/v1/auth/login` → 405 do
+Kestrel, `GET /api/v1/auth/qualquercoisa` → 404 do Kestrel). A superfície ali é o `AuthController`
+inteiro. É o desenho pretendido e não um bypass — rota pública tem de ser anônima —, mas a frase
+"sem token a requisição não sai do namespace `kong`" vale **só para as 5 rotas protegidas**.
+
+⚠️ **Cliente de browser cross-origin não funciona em rota nenhuma da plataforma.** Não há plugin
+`cors` no gateway e o plugin `jwt` exige token também no preflight, então `OPTIONS` numa rota
+protegida devolve 401 — e `OPTIONS /api/v1/usuarios` também, porque a rota de cadastro é POST-only e
+o preflight acaba casando com o Ingress protegido. Antes o mesmo preflight chegava ao Kestrel e
+voltava 405 sem header de CORS nenhum, ou seja, estava quebrado dos dois lados. Habilitar CORS de
+forma correta é trabalho de uma issue própria.
 
 **Fora do gateway de propósito:** `payments-api` e `notifications-function` são orientados a
 eventos e não têm rota. `/health*` e `/metrics` também não — o Prometheus raspa os pods **dentro**

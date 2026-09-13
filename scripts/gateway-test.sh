@@ -20,21 +20,31 @@ done
 
 PF=""
 TMPD="$(mktemp -d)"
+# Marca o início da execução: a limpeza só remove refresh_token criado DEPOIS disto, para nunca
+# apagar sessão que o script não gerou.
+INICIO="$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"
 POD_A="rl-a-$$"; POD_B="rl-b-$$"
 # O --rm do `kubectl run` é client-side: um Ctrl-C deixaria os pods rodando e martelando o gateway,
 # consumindo a cota das execuções seguintes. Por isso os pods entram no cleanup explicitamente.
 cleanup() {
   [ -n "$PF" ] && kill "$PF" 2>/dev/null || true
   kubectl -n fcg delete pod "$POD_A" "$POD_B" --ignore-not-found --wait=false >/dev/null 2>&1 || true
-  # O teste 6 cadastra um usuário REAL. Sem esta limpeza o script deixava resíduo PERMANENTE: uma
-  # conta e um refresh_token por execução (a auditoria encontrou 5 contas gw-* acumuladas no
-  # usersdb), além de um UserCreatedEvent por execução no RabbitMQ.
+  # O script deixava resíduo PERMANENTE no Mongo. São DUAS coisas distintas, e a primeira versão
+  # desta limpeza descreveu errado o que acumula:
+  #   • o teste de cadastro grava uma CONTA real (5 gw-* já haviam acumulado no usersdb). O cadastro
+  #     NÃO cria refresh_token — medido: delta de refresh_tokens = 0 num signup;
+  #   • quem cria refresh_token são os LOGINS do próprio teste (dois por execução, do admin), e
+  #     esses eram o resíduo que de fato crescia (39 tokens acumulados, 34 do admin).
+  # Por isso a limpeza remove a conta criada e os tokens do admin gerados DEPOIS do início desta
+  # execução — nunca tokens anteriores, que podem ser de sessão de outra pessoa.
   if [ -n "${EMAIL:-}" ]; then
     kubectl -n fcg exec mongodb-0 -- mongosh --quiet usersdb --eval \
       "var u=db.usuarios.findOne({Email:'$EMAIL'},{_id:1});
-       if (u) { db.refresh_tokens.deleteMany({\$or:[{UsuarioId:u._id},{UsuarioId:String(u._id)}]});
-                db.usuarios.deleteOne({_id:u._id}); }" >/dev/null 2>&1 \
-      || echo "  AVISO: nao consegui remover o usuario de teste ${EMAIL}" >&2
+       if (u) { db.usuarios.deleteOne({_id:u._id}); }
+       var a=db.usuarios.findOne({Email:'admin@fcg.com'},{_id:1});
+       if (a) { db.refresh_tokens.deleteMany({UsuarioId:a._id, CriadoEm:{\$gte:new Date('$INICIO')}}); }" \
+      >/dev/null 2>&1 \
+      || echo "  AVISO: nao consegui limpar o residuo de teste (${EMAIL})" >&2
   fi
   rm -rf "$TMPD"
 }
@@ -94,9 +104,17 @@ RL=$(curl -si -H "$HOSTH" -H "Authorization: Bearer $TOKEN" "$GW/api/v1/jogos" |
 # asserção o exercitava — um typo nele passaria verde no CI (o kubeconform pula CRDs do Kong) E na
 # matriz. Verificação por HEADER de propósito: é barata e não gasta a cota de 20/min que o teste 6
 # precisa para cadastrar.
+# A asserção mede a rota de CADASTRO, que é o caminho de escrita citado acima — medir só o login
+# deixava o buraco aberto: apagar `fcg-rate-limit-publico` da annotation do Ingress de cadastro
+# mantinha o teste verde. E-mail duplicado de propósito: devolve 409 sem criar conta e sem gastar a
+# cota de 20/min que o teste 6 precisa.
+printf '{"nome":"Dup","email":"admin@fcg.com","senha":"Teste@123456"}' > "$TMPD/dup.json"
+RLC=$(curl -si -H "$HOSTH" -H 'Content-Type: application/json' --data-binary @"$TMPD/dup.json" \
+  "$GW/api/v1/usuarios" | tr -d '\r' | awk '/^RateLimit-Limit:/{print $2; exit}')
+check "9b. cadastro publico limitado a 20/min" 20 "${RLC:-vazio}"
 RLP=$(curl -si -H "$HOSTH" -H 'Content-Type: application/json' --data-binary @"$TMPD/login.json" \
   "$GW/api/v1/auth/login" | tr -d '\r' | awk '/^RateLimit-Limit:/{print $2; exit}')
-check "9b. rota publica limitada a 20/min" 20 "${RLP:-vazio}"
+check "9c. login publico limitado a 20/min" 20 "${RLP:-vazio}"
 
 # ---- Teste de isolamento do rate limit: determinístico, dois IPs de origem ----
 #

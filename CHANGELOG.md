@@ -27,7 +27,9 @@ e o versionamento adere a [Semantic Versioning](https://semver.org/lang/pt-BR/).
   anônimo atravessar. (#26)
 - `scripts/undeploy-minikube.sh`: o guard dos CRDs passou a filtrar por **chart** (`kong-*`) em vez
   de por nome de release (`helm list -f` casa com o nome, então um `kong-dev` escapava), a enumerar
-  os kinds de `configuration.konghq.com` **a partir do cluster** em vez de uma lista fixa, e a
+  os kinds de `configuration.konghq.com` **a partir do cluster** em vez de uma lista fixa (e o
+  delete dos CRDs passou a derivar da mesma enumeração), a contar releases em **qualquer** namespace
+  — excluir o namespace `kong` deixava escapar justamente um `kong-dev` instalado nele —, e a
   **falhar fechado**: qualquer sonda que não consiga se pronunciar preserva os CRDs. O `helm
   uninstall` deixou de ser silenciado com `|| true`. (#26)
 - **`GET /api/v1/jogos` passa a exigir token quando acessado pelo gateway**, embora siga
@@ -59,8 +61,12 @@ e o versionamento adere a [Semantic Versioning](https://semver.org/lang/pt-BR/).
   habilitava nada e deixava `OPTIONS` anônimo chegar ao serviço (medido: 405 com `Server: Kestrel` e
   a requisição registrada no log do `catalog-api`), contradizendo a promessa de que sem token a
   requisição não sai do namespace `kong`.
-- **`scripts/gateway-test.sh` apaga o usuário que ele mesmo cria.** O teste de cadastro grava um
-  usuário real; sem limpeza o script acumulava conta e `refresh_token` a cada execução.
+- **`scripts/gateway-test.sh` limpa o resíduo que ele mesmo cria.** São duas coisas distintas, e a
+  primeira versão desta limpeza descreveu errado o que acumulava: o teste de cadastro grava uma
+  **conta** real (cinco já haviam acumulado no `usersdb`), mas **não** cria `refresh_token` — medido,
+  o delta de `refresh_tokens` num cadastro é zero. Quem cria `refresh_token` são os **logins do
+  próprio teste**, e era esse o resíduo que de fato crescia. A limpeza remove a conta criada e os
+  tokens do `admin` gerados **depois do início da execução**, nunca tokens anteriores.
 - **A credencial JWT precisa do label `konghq.com/credential`.** O campo `kongCredType` sozinho é a
   convenção antiga, e o webhook de admissão do KIC 3.x recusa o `KongConsumer`. O modo de falha
   engana: plugins e Ingress entram, o gateway devolve 401 sem token (parece funcionar) e devolve

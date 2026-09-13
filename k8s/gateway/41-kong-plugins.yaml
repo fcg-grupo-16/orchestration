@@ -1,6 +1,14 @@
-# VALIDAÇÃO DE JWT NA BORDA. Sem token válido o Kong responde 401 e a requisição NUNCA chega ao
-# microsserviço — o pacote não sai do namespace kong. Os serviços continuam validando por conta
-# própria (defense in depth): a borda não substitui a autorização do serviço, ela a antecipa.
+# VALIDAÇÃO DE JWT NA BORDA. NAS 5 ROTAS PROTEGIDAS, sem token válido o Kong responde 401 e a
+# requisição NUNCA chega ao microsserviço — o pacote não sai do namespace kong. Os serviços
+# continuam validando por conta própria (defense in depth): a borda não substitui a autorização
+# do serviço, ela a antecipa.
+#
+# ⚠️ O escopo importa: as rotas PÚBLICAS (`/api/v1/auth/` e o cadastro) são anônimas por
+# construção e não têm este plugin. O prefixo `/api/v1/auth/` não é restrito por método, então
+# qualquer verbo e qualquer subpath sob ele chegam ao users-api sem token (medido:
+# `PUT /api/v1/auth/login` -> 405 do Kestrel, `GET /api/v1/auth/qualquercoisa` -> 404 do Kestrel).
+# A superfície ali é o AuthController inteiro — é o desenho pretendido, não um bypass, mas a frase
+# acima não vale para esse prefixo.
 apiVersion: configuration.konghq.com/v1
 kind: KongPlugin
 metadata:

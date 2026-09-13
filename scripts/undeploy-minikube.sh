@@ -50,7 +50,10 @@ kubectl delete namespace kong --ignore-not-found
 # SF6: o `-f` do `helm list` filtra pelo NOME do release, não pelo chart. Com '^kong$' um segundo
 # Kong chamado `kong-dev` ou `my-kong` não casava, o guard via 0 e os CRDs cluster-wide eram
 # apagados, levando os CRs daquele release em cascata — exatamente o dano que este bloco previne.
-# Agora o filtro é pelo CHART (kong-*), em qualquer namespace que não seja o nosso.
+# Agora o filtro é pelo CHART (kong-*) em QUALQUER namespace, inclusive `kong`. Excluir o namespace
+# `kong` — como esta linha fazia — deixava escapar justamente um `kong-dev` instalado nele, ou seja,
+# reproduzia o defeito que o parágrafo acima descreve. E a exclusão era desnecessária: a NOSSA
+# release já foi desinstalada acima, então não há o que excluir da contagem.
 # ⚠️ FAIL-SAFE: qualquer sonda que NÃO CONSIGA se pronunciar PRESERVA os CRDs.
 # A primeira versão deste guard falhava ABERTO: `... || echo 0` em pipeline quebrada (python3
 # ausente, kind inexistente) era lido como "não há outro release do Kong", e os CRDs eram apagados
@@ -59,7 +62,7 @@ PRESERVAR=""
 
 if command -v python3 >/dev/null 2>&1; then
   OUTROS_RELEASES=$(helm list -A -o json 2>/dev/null \
-    | python3 -c 'import sys,json;print(sum(1 for r in json.load(sys.stdin) if r.get("chart","").startswith("kong-") and r.get("namespace")!="kong"))' 2>/dev/null) \
+    | python3 -c 'import sys,json;print(sum(1 for r in json.load(sys.stdin) if r.get("chart","").startswith("kong-")))' 2>/dev/null) \
     || PRESERVAR="não foi possível inspecionar os releases Helm"
   [ -n "${OUTROS_RELEASES:-}" ] || PRESERVAR="${PRESERVAR:-lista de releases Helm vazia ou ilegível}"
 else
@@ -71,13 +74,22 @@ fi
 KINDS=$(kubectl api-resources --api-group=configuration.konghq.com -o name 2>/dev/null \
   | tr '\n' ',' | sed 's/,$//')
 if [ -n "$KINDS" ]; then
+  # NOTA: KongClusterPlugin, KongVault e KongLicense são CLUSTER-SCOPED e saem sem coluna de
+  # namespace, então `$1!="fcg"` os conta como "fora de fcg". Isso falha FECHADO (preserva os CRDs),
+  # que é o comportamento certo aqui — mas se a plataforma um dia adotar um KongClusterPlugin, o
+  # undeploy passa a nunca limpar os CRDs, com a mensagem enganosa "há CRs fora de fcg".
   CRS_FORA=$(kubectl get "$KINDS" -A --no-headers 2>/dev/null | awk '$1!="fcg"' | wc -l | tr -d ' ')
 else
   PRESERVAR="${PRESERVAR:-não foi possível enumerar os kinds de configuration.konghq.com}"
 fi
 if [ -z "$PRESERVAR" ] && [ "${OUTROS_RELEASES:-0}" -eq 0 ] && [ "${CRS_FORA:-0}" -eq 0 ]; then
   echo "==> Removendo os CRDs do Kong"
-  kubectl get crd -o name 2>/dev/null | grep 'konghq.com$' | xargs -r kubectl delete --ignore-not-found
+  # Derivado da MESMA enumeração do guard: antes o guard olhava só `configuration.konghq.com` e o
+  # delete apagava tudo que casasse `konghq.com$` — divergência latente (hoje o chart 3.4.1 só tem
+  # CRDs desse grupo, mas nada garantia isso). Sem `xargs -r`, que não existe no xargs do BSD/macOS:
+  # aqui $KINDS é comprovadamente não-vazio, então a expansão direta é segura.
+  # shellcheck disable=SC2086
+  kubectl delete crd $(echo "$KINDS" | tr ',' ' ') --ignore-not-found
 else
   echo "==> CRDs do Kong PRESERVADOS: ${PRESERVAR:-há outro release (${OUTROS_RELEASES:-?}) ou CRs fora de fcg (${CRS_FORA:-?})}"
 fi

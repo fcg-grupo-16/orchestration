@@ -47,17 +47,19 @@ proxy:
 #     assim que o próprio KIC empurra config. Um pod pode remover o plugin jwt até o próximo
 #     reconcile.
 #   • Habilitar também troca o listener de loopback para 0.0.0.0:8001 (confirmado em
-#     KONG_ADMIN_LISTEN), porque o chart só força 127.0.0.1 quando `enabled: false`.
+#     KONG_ADMIN_LISTEN), porque o chart só força 127.0.0.1 quando `enabled: false`. No 3.4.1 o
+#     listener resultante é `0.0.0.0:8444 ssl` (o chart traz `admin.http.enabled: false` e
+#     `admin.tls.enabled: true`), não `:8001` — hoje o pod mostra `127.0.0.1:8444 http2 ssl`.
 #
 # O KIC fala com o listener interno do pod, então desabilitar não custa nada.
 
 # ⚠️ DESABILITADOS POR SEGURANÇA — os dois vêm `enabled: true` no default do chart.
 #
-# Descoberto na auditoria da Fase 5: sem estas duas linhas o chart cria
-# `kong-kong-manager` como **NodePort** (o chart não fixa a porta: o apiserver a sorteia), ou seja, a GUI de administração do
-# Kong fica acessível de FORA do cluster. Em modo DB-less a GUI não tem utilidade para nós — toda
-# a configuração vem dos CRDs versionados em k8s/gateway/ —, então é superfície de ataque sem
-# nenhuma contrapartida.
+# Descoberto na auditoria da Fase 5: sem estas duas linhas o chart cria `kong-kong-manager` como
+# **NodePort** (o chart não fixa a porta: o apiserver a sorteia), ou seja, a GUI de administração
+# do Kong fica acessível de FORA do cluster. Em modo DB-less a GUI não tem utilidade para nós —
+# toda a configuração vem dos CRDs versionados em k8s/gateway/ —, então é superfície de ataque
+# sem nenhuma contrapartida.
 #
 # O `portal` hoje não chega a virar Service porque `enterprise.enabled: false` o inibe. Está
 # desligado aqui de propósito mesmo assim: é exposição LATENTE, que apareceria no dia em que
