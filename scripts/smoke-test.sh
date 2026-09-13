@@ -2,9 +2,9 @@
 # Smoke test dos dois fluxos orientados a eventos, executado pela REDE INTERNA do
 # docker-compose (nomes de serviço), conforme recomendado no CLAUDE.md — evita conflitos
 # de porta no host (ex.: outro app ocupando a 8081).
-#   Fluxo de cadastro:  POST usuário    -> UserCreatedEvent    -> NotificationsAPI (boas-vindas)
+#   Fluxo de cadastro:  POST usuário    -> UserCreatedEvent    -> (sem consumidor no compose)
 #   Fluxo de compra:    POST biblioteca -> OrderPlacedEvent    -> PaymentsAPI -> PaymentProcessedEvent
-#                       -> CatalogAPI (grava biblioteca) + NotificationsAPI (confirmação)
+#                       -> CatalogAPI (grava biblioteca) + (sem consumidor no compose)
 # Requer: 'docker compose up -d' já em execução (jq/curl rodam dentro de um container efêmero).
 # Overrides opcionais: FCG_NETWORK, USERS_URL, CATALOG_URL.
 set -euo pipefail
@@ -66,5 +66,9 @@ INNER
 echo
 echo "Dica: veja os e-mails simulados e a decisão de pagamento nos logs:"
 echo "  docker compose logs payments-api"
-# A notifications-function NÃO está no compose: o scale-to-zero exige KEDA, que só existe no
-# minikube. Ver README (issue #29).
+# ⚠️ A notifications-function NÃO está no compose: o scale-to-zero exige KEDA, que só existe no
+# minikube. CONSEQUÊNCIA, desde a remoção do notifications-api (#29): no compose NINGUÉM consome
+# `notifications-user-created` nem `notifications-payment-processed`. As filas existem (o
+# definitions.json está assado na imagem do broker), então as mensagens ACUMULAM em vez de serem
+# descartadas — nada quebra, mas não há e-mail simulado para ver no compose. Para exercitar a
+# Function: `func start` no repo dela, ou o cluster (`./scripts/keda-test.sh`). Ver README (#29).

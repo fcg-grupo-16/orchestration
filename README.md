@@ -350,11 +350,16 @@ Remover:
 ./scripts/undeploy-minikube.sh
 ```
 
-> O script remove os manifestos **e** o gateway (release Helm, namespace `kong` e os CRDs
-> `*.konghq.com`), nessa ordem — os CRDs têm de sair **depois** dos `KongPlugin`/`KongConsumer`,
-> senão o delete falha com `no matches for kind KongPlugin`. Um `kubectl delete -R -f k8s/` avulso
-> **não** desinstala o Kong: deixaria o release, os CRDs, o webhook de admissão e a NodePort 30080
-> para trás.
+> O script remove os manifestos, o gateway (release Helm, namespace `kong` e os CRDs
+> `*.konghq.com`) **e o KEDA** (namespace `keda`, os três deployments, o webhook, o apiservice de
+> external metrics e os CRDs `keda.sh`), nessa ordem — os CRDs têm de sair **depois** dos
+> `KongPlugin`/`KongConsumer` e do `ScaledObject`, senão o delete falha com `no matches for kind`.
+> Um `kubectl delete -R -f k8s/` avulso **não** desinstala nem o Kong nem o KEDA: deixaria os
+> releases, os CRDs, os webhooks e a NodePort 30080 para trás.
+>
+> A remoção dos CRDs de ambos é **condicional e falha fechado**: se houver outro release do Kong, ou
+> CRs de Kong/KEDA fora do namespace `fcg`, ou se a sonda não conseguir se pronunciar, os CRDs são
+> **preservados** — apagá-los levaria em cascata os recursos de outros times.
 
 > O `PersistentVolumeClaim` gerado pelo `volumeClaimTemplates` **não** é removido por
 > `kubectl delete -R -f k8s/` — os dados ficam para trás de propósito. Para zerar de vez
@@ -437,6 +442,11 @@ Os tempos **variam** de execução para execução; não são especificação.
   à parte só por causa do host.
 - **A `notifications-function` não está no `docker-compose.yml`**: scale-to-zero exige KEDA, que só
   existe no minikube. Para validar o código localmente, use `func start` no repo da Function.
+- ⚠️ **Consequência disso no compose:** desde a remoção do `notifications-api`, **ninguém consome**
+  `notifications-user-created` nem `notifications-payment-processed` no caminho do compose. As filas
+  existem (o `definitions.json` está assado na imagem do broker), então as mensagens **acumulam** em
+  vez de serem descartadas — nada quebra, mas **não há e-mail simulado para ver no compose**. O fluxo
+  de notificação completo só é observável no cluster.
 
 ## Observabilidade — escolhemos a **Opção A** (Prometheus + Grafana)
 

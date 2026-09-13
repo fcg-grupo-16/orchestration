@@ -71,6 +71,12 @@ e o versionamento adere a [Semantic Versioning](https://semver.org/lang/pt-BR/).
   falha: medido, `azure.functions.webjobs.storage` é a **única** sub-checagem não saudável
   (`web_host.lifecycle` e `script_host.lifecycle` = `Healthy`), e a função executa normalmente.
   Configurar um Storage Account só para silenciar o log seria pagar uma dependência por um sintoma.
+- **No compose, as filas de notificação ficaram sem consumidor.** A `notifications-function` não
+  está no `docker-compose.yml` (scale-to-zero exige KEDA, que só existe no minikube), então desde
+  esta remoção `notifications-user-created` e `notifications-payment-processed` **acumulam** mensagens
+  no caminho do compose — as filas existem, pois o `definitions.json` está assado na imagem do broker.
+  Nada quebra, mas não há e-mail simulado para ver localmente: o fluxo de notificação só é observável
+  no cluster. Registrado no cabeçalho do `smoke-test.sh` e no README.
 - **Ordem da remoção importou.** O `notifications-api` só saiu depois de a Function ter
   comprovadamente consumido um evento real. Com os dois de pé eles são *competing consumers* da mesma
   fila e cada e-mail sai por um dos dois de forma imprevisível — durante a validação isto apareceu de

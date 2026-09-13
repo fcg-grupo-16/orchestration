@@ -17,7 +17,7 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 echo "==> Removendo os manifestos (namespace fcg + gateway)"
 if ! ERRO=$(kubectl delete -R -f "$ROOT_DIR/k8s/" --ignore-not-found 2>&1); then
   if echo "$ERRO" | grep -q "no matches for kind"; then
-    echo "   aviso: CRDs do Kong ausentes (gateway já removido) — seguindo"
+    echo "   aviso: CRDs do Kong ou do KEDA ausentes (já removidos à mão) — seguindo"
     echo "$ERRO" | grep -v "no matches for kind" || true
   else
     echo "$ERRO" >&2
@@ -107,4 +107,39 @@ else
 (${CRS_FORA:-?})}"
 fi
 
-echo "Recursos FCG e gateway removidos."
+# --- KEDA: o deploy instala, o undeploy remove (mesma simetria exigida do Kong) ---
+#
+# Sem este bloco sobravam o namespace `keda`, os três deployments (operator, metrics-apiserver,
+# admission), o webhook de admissão, o apiservice de external metrics e os seis CRDs `keda.sh` —
+# enquanto o `k8s/50-keda-notifications.yaml` saía junto dos manifestos acima. Resultado: um
+# operador de pé sem nada para reconciliar.
+#
+# A ORDEM já está garantida: os CRs (ScaledObject/TriggerAuthentication) vivem em `k8s/` e são
+# removidos no primeiro passo deste script, antes dos CRDs saírem aqui.
+#
+# ⚠️ A versão TEM de casar com a do deploy-minikube.sh — a remoção é `delete` da MESMA URL pinada.
+KEDA_VERSION="2.20.2"
+
+# Guard análogo ao dos CRDs do Kong, e fail-CLOSED pelo mesmo motivo: o manifesto do release inclui
+# os CRDs, que são cluster-scoped. Removê-los levaria em cascata os ScaledObject de QUALQUER outro
+# time no cluster. Se a sonda não conseguir se pronunciar, preservamos.
+PRESERVAR_KEDA=""
+KEDA_KINDS=$(kubectl api-resources -o name 2>/dev/null | grep 'keda\.sh$' | tr '\n' ',' | sed 's/,$//')
+if [ -z "$KEDA_KINDS" ]; then
+  PRESERVAR_KEDA="nenhum CRD keda.sh no cluster (KEDA já removido, ou nunca instalado)"
+elif KEDA_OUT=$(kubectl get "$KEDA_KINDS" -A --no-headers 2>/dev/null); then
+  # `$1!="fcg"` também conta CRs cluster-scoped (que saem sem coluna de namespace) — falha fechado.
+  KEDA_FORA=$(printf '%s\n' "$KEDA_OUT" | awk 'NF && $1!="fcg"' | wc -l | tr -d ' ')
+else
+  PRESERVAR_KEDA="não foi possível listar os CRs do KEDA"
+fi
+
+if [ -z "$PRESERVAR_KEDA" ] && [ "${KEDA_FORA:-0}" -eq 0 ]; then
+  echo "==> Removendo o KEDA v$KEDA_VERSION"
+  kubectl delete --ignore-not-found \
+    -f "https://github.com/kedacore/keda/releases/download/v${KEDA_VERSION}/keda-${KEDA_VERSION}.yaml"
+else
+  echo "==> KEDA PRESERVADO: ${PRESERVAR_KEDA:-há CRs do KEDA fora de fcg (${KEDA_FORA:-?})}"
+fi
+
+echo "Recursos FCG, gateway e KEDA removidos."
