@@ -1,0 +1,57 @@
+# Values do chart kong/kong para a plataforma FCG (Fase 3, issue #26).
+#
+# ⚠️ POR QUE ESTE ARQUIVO NÃO ESTÁ EM k8s/gateway/, apesar de a issue pedir isso:
+# o scripts/deploy-minikube.sh roda `kubectl apply -R -f k8s/`, que aplica TUDO recursivamente.
+# Um values de Helm não tem apiVersion/kind, então o apply falharia inteiro — não só neste arquivo.
+# Este projeto já pagou esse preço na #27, quando o dashboard do Grafana (fcg-overview.json) ficou
+# dentro de k8s/ e quebrou o deploy; a solução foi a mesma: artefato que não é manifesto vive fora
+# de k8s/. Os CRDs do Kong (KongPlugin/KongConsumer/Ingress) continuam em k8s/gateway/.
+#
+# Modo DB-LESS: a configuração do gateway vem 100% dos CRDs/Ingress versionados neste repo
+# (declarativo, GitOps-friendly). Não existe banco do Kong nem Admin API mutável para "configurar
+# na mão" e perder tudo no próximo deploy.
+
+ingressController:
+  enabled: true
+  # Só observa recursos com esta IngressClass. O ingress-nginx do minikube continua instalado
+  # (outros projetos da máquina podem usá-lo), mas nenhuma rota nossa passa por ele.
+  ingressClass: kong
+
+env:
+  database: "off"
+
+proxy:
+  # NodePort no minikube: alcançável por `minikube service` ou port-forward. No macOS com driver
+  # docker o IP do minikube não é roteável direto, então o caminho confiável é port-forward.
+  type: NodePort
+  http:
+    enabled: true
+    nodePort: 30080
+  tls:
+    # Ambiente de demo: sem TLS. TLS no gateway está explicitamente fora do escopo da #26.
+    enabled: false
+
+admin:
+  # Admin API apenas interna (ClusterIP). Em DB-less a fonte da verdade é o Kubernetes, então a
+  # Admin API é read-only na prática — e não deve ser exposta fora do cluster de forma alguma.
+  enabled: true
+  http:
+    enabled: true
+  type: ClusterIP
+
+# ⚠️ DESABILITADOS POR SEGURANÇA — os dois vêm `enabled: true` no default do chart.
+#
+# Descoberto na auditoria da Fase 5: sem estas duas linhas o chart cria
+# `kong-kong-manager` como **NodePort** (portas 30858/30743), ou seja, a GUI de administração do
+# Kong fica acessível de FORA do cluster. Em modo DB-less a GUI não tem utilidade para nós — toda
+# a configuração vem dos CRDs versionados em k8s/gateway/ —, então é superfície de ataque sem
+# nenhuma contrapartida.
+#
+# O `portal` hoje não chega a virar Service porque `enterprise.enabled: false` o inibe. Está
+# desligado aqui de propósito mesmo assim: é exposição LATENTE, que apareceria no dia em que
+# alguém habilitasse o enterprise sem reler este arquivo.
+manager:
+  enabled: false
+
+portal:
+  enabled: false

@@ -1,0 +1,52 @@
+# Consumer + credencial JWT que o plugin `jwt` do Kong usa para VALIDAR a assinatura do token
+# emitido pelo users-api.
+#
+# COMO O CASAMENTO FUNCIONA: o plugin lê a claim configurada em `key_claim_name` (default `iss`)
+# do token, procura uma credencial cujo campo `key` seja igual a esse valor, e usa o `secret`
+# dessa credencial para verificar a assinatura HS256. Por isso `key` == JwtSettings__Issuer.
+#
+# ⚠️ PARIDADE DE SEGREDO — agora TRIPLA. Antes da #26, JwtSettings__SecretKey precisava ser
+# idêntica entre users-api (emite) e catalog-api (valida). O Kong passa a ser o TERCEIRO
+# validador. O valor abaixo é byte-idêntico ao JWT_SECRET_KEY de scripts/seal-secrets.sh e ao
+# anchor *jwt-secret do docker-compose.yml (conferido nas três fontes). Divergiu = 401 em tudo,
+# e o sintoma engana: parece token inválido, é config de gateway.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: fcg-jwt-credential
+  namespace: fcg
+  labels:
+    app.kubernetes.io/part-of: fiap-cloud-games
+    # ⚠️ ESTE LABEL É OBRIGATÓRIO e é o que o KIC 3.x usa para reconhecer o Secret como
+    # credencial. Sem ele o webhook de admissão RECUSA o KongConsumer com
+    # "secret has no credential type, add a konghq.com/credential label" — e o efeito é pior que
+    # um erro limpo: os plugins e Ingress entram, o gateway devolve 401 sem token (parece
+    # funcionar!) e devolve 401 TAMBÉM com token válido, porque não há credencial para casar
+    # com a claim `iss`. Verificado contra o webhook do KIC 3.5 / Kong 3.9 instalado.
+    konghq.com/credential: jwt
+type: Opaque
+stringData:
+  # Campo da convenção ANTIGA. Mantido porque o webhook o aceita e ele documenta a intenção para
+  # quem conhece a forma legada — mas NÃO é ele que faz o reconhecimento funcionar: quem faz é o
+  # label acima. Não remova o label pensando que este campo basta.
+  kongCredType: jwt
+  key: "FiapCloudGames"
+  algorithm: HS256
+  # ⚠️ Chave em CLARO. Só aceitável porque é valor de DEMONSTRAÇÃO, exatamente como já está no
+  # docker-compose.yml versionado. Follow-up registrado na issue: migrar para
+  # k8s/05-sealed-secrets.yaml via scripts/seal-secrets.sh — aí a paridade com users-api/catalog-api
+  # passa a ser garantida pelo próprio script, em vez de depender de alguém copiar certo.
+  secret: "FiapCloudGames_Demo_SecretKey_Com_Pelo_Menos_256_Bits_Para_HMAC_SHA256!"
+---
+apiVersion: configuration.konghq.com/v1
+kind: KongConsumer
+metadata:
+  name: fcg-api-consumer
+  namespace: fcg
+  labels:
+    app.kubernetes.io/part-of: fiap-cloud-games
+  annotations:
+    kubernetes.io/ingress.class: kong
+username: fcg-api-consumer
+credentials:
+  - fcg-jwt-credential

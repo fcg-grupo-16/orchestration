@@ -22,11 +22,27 @@ echo "==> Garantindo o controller Sealed Secrets ($SEALED_SECRETS_VERSION)"
 kubectl apply -f "https://github.com/bitnami-labs/sealed-secrets/releases/download/${SEALED_SECRETS_VERSION}/controller.yaml"
 kubectl -n kube-system rollout status deploy/sealed-secrets-controller --timeout=120s
 
-# Ingress Controller (NGINX): necessário para o k8s/30-ingress.yaml expor users-api/catalog-api
-# fora do cluster. O addon do minikube é idempotente.
-echo "==> Habilitando o addon ingress (NGINX Ingress Controller)"
-minikube addons enable ingress
-kubectl -n ingress-nginx rollout status deploy/ingress-nginx-controller --timeout=180s
+# API Gateway (Kong Ingress Controller, issue #26) — substitui o Ingress NGINX: porta de entrada
+# ÚNICA (api.fcg.local) com validação de JWT na borda. Modo DB-less: a configuração vem 100% dos
+# CRDs/Ingress versionados em k8s/gateway/, nunca de uma Admin API mutável.
+#
+# ORDEM IMPORTA: o Kong precisa estar instalado ANTES do `kubectl apply -R -f k8s/`, porque os
+# CRDs KongPlugin/KongConsumer são pré-requisito dos manifestos em k8s/gateway/. Instalado depois,
+# o apply falha com "no matches for kind KongPlugin".
+#
+# Versão do chart PINADA (nunca latest) para reprodutibilidade. O Kong 3.x só é distribuído por
+# Helm — o antigo all-in-one-dbless.yaml foi descontinuado pelo projeto.
+KONG_CHART_VERSION="3.4.1"
+echo "==> Instalando/atualizando o Kong Ingress Controller (chart $KONG_CHART_VERSION)"
+helm repo add kong https://charts.konghq.com >/dev/null 2>&1 || true
+helm repo update kong >/dev/null
+kubectl create namespace kong --dry-run=client -o yaml | kubectl apply -f -
+helm upgrade --install kong kong/kong \
+  --version "$KONG_CHART_VERSION" \
+  --namespace kong \
+  --values "$ROOT_DIR/gateway/kong-values.yaml" \
+  --wait --timeout 300s
+kubectl -n kong rollout status deploy/kong-kong --timeout=300s
 
 echo "==> Build das imagens locais (:local)"
 # RabbitMQ custom (base oficial + plugin rabbitmq_delayed_message_exchange).
@@ -75,16 +91,22 @@ echo "==> Pods:"
 kubectl -n fcg get pods
 echo
 echo
-echo "Pronto. Acesso externo via Ingress (users-api / catalog-api):"
-echo "  1) Mapeie os hosts no /etc/hosts (uma vez):"
-echo "       echo \"\$(minikube ip) users.fcg.local catalog.fcg.local\" | sudo tee -a /etc/hosts"
-echo "     No macOS com driver docker o IP do minikube não é alcançável direto — rode"
-echo "     'minikube tunnel' em outro terminal e aponte os hosts para 127.0.0.1."
-echo "  2) Teste:"
-echo "       curl http://users.fcg.local/health          # users-api usa /health"
-echo "       curl http://catalog.fcg.local/api/v1/jogos"
+echo "Pronto. Acesso externo APENAS pelo API Gateway (porta de entrada única):"
+echo "  1) Abra o proxy do Kong (no macOS com driver docker, port-forward é o caminho confiável):"
+echo "       kubectl -n kong port-forward svc/kong-kong-proxy 8000:80"
+echo "  2) Todas as chamadas levam o Host do gateway:"
+echo "       GW=http://localhost:8000; H='Host: api.fcg.local'"
+echo "       curl -i -H \"\$H\" \$GW/api/v1/jogos                      # 401 do KONG (sem token)"
+echo "       TOKEN=\$(curl -s -H \"\$H\" -H 'Content-Type: application/json' \\"
+echo "         -d '{\"email\":\"admin@fcg.com\",\"senha\":\"Admin@123456\"}' \\"
+echo "         \$GW/api/v1/auth/login | jq -r .token)"
+echo "       curl -i -H \"\$H\" -H \"Authorization: Bearer \$TOKEN\" \$GW/api/v1/jogos   # 200"
 echo
-echo "Alternativa sem /etc/hosts (port-forward direto dos Services):"
+echo "  O catálogo é [AllowAnonymous] no serviço, mas a BORDA exige token (decisão da #26)."
+echo "  payments-api e notifications-function são event-driven: sem rota no gateway."
+echo "  /health* e /metrics não são expostos — o Prometheus raspa os pods dentro do cluster."
+echo
+echo "Acesso direto aos Services (diagnóstico, sem passar pelo gateway):"
 echo "  kubectl -n fcg port-forward svc/users-api 8081:80"
 echo "  kubectl -n fcg port-forward svc/catalog-api 8082:80"
 echo "  kubectl -n fcg port-forward svc/rabbitmq 15672:15672   # Management UI (guest/guest)"

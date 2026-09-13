@@ -1,0 +1,79 @@
+# VALIDAÇÃO DE JWT NA BORDA. Sem token válido o Kong responde 401 e a requisição NUNCA chega ao
+# microsserviço — o pacote não sai do namespace kong. Os serviços continuam validando por conta
+# própria (defense in depth): a borda não substitui a autorização do serviço, ela a antecipa.
+apiVersion: configuration.konghq.com/v1
+kind: KongPlugin
+metadata:
+  name: fcg-jwt
+  namespace: fcg
+  labels:
+    app.kubernetes.io/part-of: fiap-cloud-games
+plugin: jwt
+config:
+  # `iss` já é o default, mas explicitar documenta o acoplamento com JwtSettings__Issuer.
+  key_claim_name: iss
+  # Valida a expiração. SEM isto um token expirado passaria pela borda — o plugin só verifica as
+  # claims listadas aqui.
+  claims_to_verify:
+    - exp
+  # Superfície mínima: só o header Authorization. O default do plugin também aceita querystring
+  # e cookie, o que permitiria vazar token em log de acesso / histórico de browser.
+  header_names:
+    - Authorization
+  # Nossa chave é string UTF-8 crua, não base64.
+  secret_is_base64: false
+  # Não exigir JWT no preflight CORS (OPTIONS): senão o browser nem consegue perguntar.
+  run_on_preflight: false
+---
+# RATE LIMITING na borda.
+# `limit_by: consumer` usa o consumer resolvido pelo plugin jwt, ou seja o limite é POR TOKEN e
+# não por IP — importante porque atrás de NAT muitos clientes compartilham o mesmo IP.
+#
+# `policy: local` = contadores na memória de cada réplica do Kong. Com 1 réplica (nosso caso) é
+# exato; com N réplicas o limite efetivo seria N × minute. Contador global exigiria
+# `policy: redis` apontando para redis.fcg.svc.cluster.local:6379 — anotado como melhoria na
+# issue, fora do escopo aqui.
+apiVersion: configuration.konghq.com/v1
+kind: KongPlugin
+metadata:
+  name: fcg-rate-limit
+  namespace: fcg
+  labels:
+    app.kubernetes.io/part-of: fiap-cloud-games
+plugin: rate-limiting
+config:
+  minute: 120
+  policy: local
+  limit_by: consumer
+  # Devolve os headers RateLimit-* (padrão IETF) para o cliente saber quanto sobrou.
+  hide_client_headers: false
+  # Falha ABERTA de propósito: se o backend de contagem falhar, não derrube a API.
+  # Indisponibilidade do contador não pode virar indisponibilidade do produto.
+  fault_tolerant: true
+---
+# CORRELATION ID: o Kong gera um X-Correlation-Id por requisição, propaga para o upstream e
+# (com echo_downstream) devolve ao cliente. O CorrelationIdMiddleware de users-api/catalog-api lê
+# o header e o coloca em HttpContext.TraceIdentifier, além de ecoá-lo na resposta.
+#
+# ⚠️ O QUE ISTO **NÃO** FAZ, apesar de ser tentador supor: o id NÃO entra nos logs dos serviços.
+# Verificado no cluster — `kubectl logs deploy/users-api` tem ZERO ocorrências de correlation.
+# O middleware não empurra o valor para o LogContext do Serilog, então o log estruturado sai com
+# @tr/@sp (trace e span do OpenTelemetry) e RequestId, e nenhum campo de correlation.
+#
+# Para rastrear uma requisição ponta a ponta HOJE, o caminho que funciona é o **TraceId** (@tr no
+# log, e o mesmo id no Jaeger). O valor prático deste plugin é dar ao cliente um id citável num
+# relato de erro. Enriquecer o log com o correlation-id é melhoria de serviço (users-api /
+# catalog-api), não de gateway.
+apiVersion: configuration.konghq.com/v1
+kind: KongPlugin
+metadata:
+  name: fcg-correlation-id
+  namespace: fcg
+  labels:
+    app.kubernetes.io/part-of: fiap-cloud-games
+plugin: correlation-id
+config:
+  header_name: X-Correlation-Id
+  generator: uuid
+  # Devolve o id ao cliente também: sem isso o usuário não tem o que citar num relato de erro.
+  echo_downstream: true
