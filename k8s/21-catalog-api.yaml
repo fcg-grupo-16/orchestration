@@ -15,10 +15,22 @@ data:
   OTEL_EXPORTER_OTLP_PROTOCOL: "grpc"
   RabbitMq__Host: "rabbitmq"
   MongoDbSettings__DatabaseName: "catalogdb"
-  # Cache distribuído (Fase 3). Prefixo de TODA chave escrita por este serviço: é o que
-  # isola logicamente os keyspaces na instância compartilhada de Redis. A connection
-  # string é sensível e vem do SealedSecret catalog-api-secret.
+  # Cache distribuído (Fase 3). A connection string é sensível e vem do SealedSecret
+  # catalog-api-secret; `InstanceName` prefixa TODA chave escrita por este serviço, que é o
+  # que isola logicamente os keyspaces na instância compartilhada de Redis.
+  # `Enabled` é o INTERRUPTOR: sem ele o serviço sobe com cache no-op (o default em
+  # appsettings.json é conservador) e o requisito obrigatório da Fase 3 ficaria inativo no
+  # cluster, mesmo com o Redis provisionado e a connection string injetada.
+  Redis__Enabled: "true"
   Redis__InstanceName: "fcg:catalog:"
+  # Operação atrás do Kong (issue #26). X-Forwarded-* é header que o CLIENTE controla, então a
+  # confiança é restrita às redes do cluster: pods e Services do minikube. Sem isto, o Location
+  # dos 201 sai com o host interno (catalog-api:8080) e os logs registram o IP do pod do gateway.
+  # Os MESMOS CIDRs valem para o users-api — divergir aqui é dívida que alguém paga depois.
+  ForwardedHeaders__Enabled: "true"
+  ForwardedHeaders__KnownNetworks__0: "10.244.0.0/16"
+  ForwardedHeaders__KnownNetworks__1: "10.96.0.0/12"
+  ForwardedHeaders__ForwardLimit: "1"
   JwtSettings__Issuer: "FiapCloudGames"
   JwtSettings__Audience: "FiapCloudGames"
 ---
