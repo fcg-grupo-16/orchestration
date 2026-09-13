@@ -238,7 +238,7 @@ do cluster.
 | --- | --- |
 | [`gateway/kong-values.yaml`](gateway/kong-values.yaml) | values do chart (DB-less, `ingressClass: kong`, proxy NodePort 30080, admin/manager/portal fechados) |
 | [`k8s/gateway/40-kong-consumer.yaml`](k8s/gateway/40-kong-consumer.yaml) | `KongConsumer` + credencial JWT |
-| [`k8s/gateway/41-kong-plugins.yaml`](k8s/gateway/41-kong-plugins.yaml) | plugins `jwt`, `rate-limiting` (120/min protegido e 20/min público, **por IP**), `correlation-id` |
+| [`k8s/gateway/41-kong-plugins.yaml`](k8s/gateway/41-kong-plugins.yaml) | plugins `jwt`, `rate-limiting` (120/min protegido e 20/min público — ver a limitação abaixo), `correlation-id` |
 | [`k8s/gateway/42-kong-ingress.yaml`](k8s/gateway/42-kong-ingress.yaml) | as três rotas (pública, cadastro, protegida) |
 
 > **Por que o `kong-values.yaml` não está em `k8s/gateway/`:** o `deploy-minikube.sh` roda
@@ -270,12 +270,19 @@ GW=http://localhost:8000; H='Host: api.fcg.local'
 | `curl -i -H "$H" -H 'Content-Type: application/json' --data-binary @signup.json $GW/api/v1/usuarios` | **201** (cadastro público) |
 | `curl -i -H "$H" $GW/api/v1/usuarios` | **401** (GET exige token) |
 | `curl -i -H "$H" -H "Authorization: Bearer $TOKEN" $GW/health` | **404** — não exposto |
-| 130 requisições em 1 min | aparece **429** após 120 |
-| `./scripts/gateway-test.sh` | a matriz inteira, incluindo o **teste de dois usuários** |
+| 130 requisições em 1 min | aparece **429** após 120 — **não** prova isolamento (ver limitação) |
+| `./scripts/gateway-test.sh` | a matriz inteira, incluindo o teste de **dois pods** do rate limit |
 | `curl -si ... \| grep -i ratelimit` | `RateLimit-Limit: 120`, `RateLimit-Remaining`, `RateLimit-Reset` |
 
 > **macOS + driver docker:** o `minikube ip` não é alcançável direto do host, por isso o
 > `port-forward` acima é o caminho recomendado em vez de `/etc/hosts` + `minikube tunnel`.
+
+> ⚠️ **A `IngressClass` default do cluster continua sendo a `nginx`**
+> (`ingressclass.kubernetes.io/is-default-class: true`), com o controller do minikube instalado.
+> Nada da plataforma passa por ele hoje — todos os nossos Ingress declaram
+> `ingressClassName: kong` —, mas **um Ingress futuro que esqueça o `ingressClassName` entra pelo
+> NGINX, sem validação de JWT**, furando a porta de entrada única. Ao adicionar rota nova, declare
+> a classe explicitamente.
 
 #### Correlation-id — o que ele faz e o que não faz
 
@@ -295,21 +302,29 @@ O plugin gera um `X-Correlation-Id` por requisição, propaga ao upstream e devo
 - Sem TLS no gateway (ambiente de demonstração).
 - `rate-limiting` com `policy: local`: exato com 1 réplica do Kong; com N réplicas o limite
   efetivo seria N × 120. Contador global exigiria `policy: redis`.
-- **O limite é por IP de origem, não por usuário.** `limit_by: consumer` *parece* ser por token,
-  mas não é: todo JWT do `users-api` tem `iss: FiapCloudGames`, o plugin `jwt` resolve o consumer
-  por essa claim, e portanto **todos** os usuários casam com o único `KongConsumer` — o contador
-  viraria global e um usuário derrubaria os outros. Limite real por usuário exigiria um
-  `KongConsumer` por usuário, o que não é declarável para usuários dinâmicos.
-  Verificado com dois pods de IPs distintos: o pod A esgota a cota (120×200 + 429 em seguida) e o
-  pod B, de outro IP, continua recebendo 200 (`gateway-test.sh`, testes 10a/10b).
-- ⚠️ **O IP que conta é o que o Kong enxerga, e o `ForwardedHeaders` dos serviços não muda isso.**
-  `ForwardedHeaders__*` governa o que `users-api`/`catalog-api` veem como `RemoteIpAddress`; o
-  contador do `rate-limiting` usa a visão do **Kong**, que só confia em `X-Forwarded-For` se
-  `trusted_ips`/`real_ip_header` forem configurados nele — e **não são**, hoje. Consequência
-  prática: no cluster, pods de IPs diferentes têm cotas independentes; atrás de um NAT ou de um
-  load balancer não configurado, todos os clientes compartilhariam a cota do IP visto pelo Kong.
-  Via `kubectl port-forward`, todo o tráfego chega com o mesmo IP — então não use port-forward para
-  avaliar isolamento.
+- ⚠️ **O rate limit é, na prática, um bucket GLOBAL para todo cliente externo.** Não é o que o
+  nome `limit_by: ip` sugere, e não foi corrigido — é limitação conhecida. Medido no cluster:
+  via `kubectl port-forward` (o único caminho documentado) o access log do Kong registra
+  `127.0.0.1` para **todas** as requisições; via NodePort 30080 o Service tem
+  `externalTrafficPolicy: Cluster`, então o kube-proxy faz SNAT e todo cliente externo chega com o
+  IP do nó. E o contador é compartilhado entre as 5 rotas protegidas (medido em sequência:
+  `jogos`=116 → `biblioteca`=115 → `pedidos`=114 → `jogos`=113 → `avaliacoes`=112).
+  **São 120/min para a plataforma inteira vista de fora**, e um cliente que esgote a cota faz os
+  outros receberem 429. Passaria a isolar de verdade com um LoadBalancer real preservando o IP de
+  origem (`externalTrafficPolicy: Local`) ou `trusted_ips`/`real_ip_header` configurados **no
+  Kong** — nenhum dos dois existe aqui.
+- Ainda assim `limit_by: ip` é preferível a `consumer`: com `consumer` o colapso é **garantido por
+  construção**, porque todo JWT do `users-api` tem `iss: FiapCloudGames` e o plugin resolve o
+  consumer por essa claim — todos casam com o único `KongConsumer`. Limite real por usuário exigiria
+  um `KongConsumer` por usuário, o que não é declarável para usuários dinâmicos.
+- ⚠️ **O `ForwardedHeaders__*` dos serviços não ajuda nisso.** Ele governa o `RemoteIpAddress` que
+  `users-api`/`catalog-api` leem do `X-Forwarded-For` escrito pelo Kong — e esse valor é
+  `127.0.0.1` para todos. Logo o rate limiter de login do próprio `users-api` também é global hoje.
+- ⚠️ **Requisição não autenticada não consome cota nas rotas protegidas.** O plugin `jwt`
+  (prioridade 1005) roda antes do `rate-limiting` (901) e encerra a requisição: medido, o 401 sai
+  com **0** headers `RateLimit-*` e o 200 com 3. Um flood anônimo com token inválido nas rotas
+  protegidas não é limitado na borda. Prioridade de plugin no Kong é fixa por tipo — não há inversão
+  declarativa. O caminho anônimo é coberto pelo `fcg-rate-limit-publico` nas rotas públicas.
 - A credencial JWT é um `Secret` com o valor **em claro** — de demonstração, como já ocorre no
   `docker-compose.yml`. Migrar para SealedSecret é follow-up.
 
@@ -612,7 +627,7 @@ Todo **push na `main`** e **todo pull request** dispara o workflow
 > (`k8s/05-sealed-secrets.yaml`), que o kubeconform **pula** em vez de reprovar.
 >
 > ⚠️ **O mesmo vale para os CRDs do Kong, e a consequência é maior.** `KongPlugin` e
-> `KongConsumer` (`k8s/gateway/`) são **pulados**: dos 46 recursos, 10 são skipped e só o Secret e
+> `KongConsumer` (`k8s/gateway/`) são **pulados**: dos 47 recursos, 11 são skipped e só o Secret e
 > os 3 Ingresses de `k8s/gateway/` chegam a ser validados. Um campo inexistente ou um typo em
 > `claims_to_verify` passa **verde no CI** — e o modo de falha é traiçoeiro: o Kong rejeita o
 > plugin, o gateway devolve 401 sem token (parece funcionar) e devolve 401 **também com token

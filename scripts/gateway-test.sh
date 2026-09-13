@@ -19,11 +19,19 @@ for bin in kubectl curl jq; do
 done
 
 PF=""
-cleanup() { [ -n "$PF" ] && kill "$PF" 2>/dev/null || true; }
+TMPD="$(mktemp -d)"
+POD_A="rl-a-$$"; POD_B="rl-b-$$"
+# O --rm do `kubectl run` é client-side: um Ctrl-C deixaria os pods rodando e martelando o gateway,
+# consumindo a cota das execuções seguintes. Por isso os pods entram no cleanup explicitamente.
+cleanup() {
+  [ -n "$PF" ] && kill "$PF" 2>/dev/null || true
+  kubectl -n fcg delete pod "$POD_A" "$POD_B" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+  rm -rf "$TMPD"
+}
 trap cleanup EXIT
 
 echo "==> Abrindo o proxy do Kong em :${GW_PORT}"
-kubectl -n kong port-forward "svc/kong-kong-proxy" "${GW_PORT}:80" >/tmp/gateway-test-pf.log 2>&1 &
+kubectl -n kong port-forward "svc/kong-kong-proxy" "${GW_PORT}:80" >"$TMPD/pf.log" 2>&1 &
 PF=$!
 for _ in $(seq 1 30); do curl -s -o /dev/null "$GW" && break; sleep 1; done
 
@@ -44,8 +52,8 @@ SRV=$(curl -si -H "$HOSTH" "$GW/api/v1/jogos" | tr -d '\r' | awk 'tolower($1)=="
 case "$SRV" in kong/*) printf "  OK   %-46s %s\n" "3. o 401 vem do Kong" "$SRV";;
   *) printf "  FALHA %-45s server=%s (esperado kong/*)\n" "3. o 401 vem do Kong" "${SRV:-vazio}"; FALHAS=$((FALHAS+1));; esac
 
-printf '{"email":"admin@fcg.com","senha":"Admin@123456"}' > /tmp/gw-login.json
-TOKEN=$(curl -s -H "$HOSTH" -H 'Content-Type: application/json' --data-binary @/tmp/gw-login.json \
+printf '{"email":"admin@fcg.com","senha":"Admin@123456"}' > "$TMPD/login.json"
+TOKEN=$(curl -s -H "$HOSTH" -H 'Content-Type: application/json' --data-binary @"$TMPD/login.json" \
   "$GW/api/v1/auth/login" | jq -r '.token // empty')
 [ -n "$TOKEN" ] && printf "  OK   %-46s 200\n" "4. login publico -> token" \
   || { printf "  FALHA %-45s sem token\n" "4. login publico"; FALHAS=$((FALHAS+1)); }
@@ -53,9 +61,9 @@ TOKEN=$(curl -s -H "$HOSTH" -H 'Content-Type: application/json' --data-binary @/
 check "5. com token -> 200" 200 "$(code -H "Authorization: Bearer $TOKEN" "$GW/api/v1/jogos")"
 
 EMAIL="gw-$(date +%s)-$RANDOM@fcg.com"
-printf '{"nome":"Gateway Teste","email":"%s","senha":"Teste@123456"}' "$EMAIL" > /tmp/gw-signup.json
+printf '{"nome":"Gateway Teste","email":"%s","senha":"Teste@123456"}' "$EMAIL" > "$TMPD/signup.json"
 check "6. cadastro publico (POST) -> 201" 201 \
-  "$(code -H 'Content-Type: application/json' --data-binary @/tmp/gw-signup.json "$GW/api/v1/usuarios")"
+  "$(code -H 'Content-Type: application/json' --data-binary @"$TMPD/signup.json" "$GW/api/v1/usuarios")"
 check "7. GET usuarios sem token -> 401" 401 "$(code "$GW/api/v1/usuarios")"
 check "8. /health nao exposto -> 404" 404 "$(code -H "Authorization: Bearer $TOKEN" "$GW/health")"
 
@@ -63,47 +71,82 @@ RL=$(curl -si -H "$HOSTH" -H "Authorization: Bearer $TOKEN" "$GW/api/v1/jogos" |
 [ "$RL" -gt 0 ] && printf "  OK   %-46s %s headers\n" "9. headers RateLimit-*" "$RL" \
   || { printf "  FALHA %-45s nenhum header RateLimit\n" "9. headers RateLimit-*"; FALHAS=$((FALHAS+1)); }
 
-# ---- O teste que pega o defeito que o resto da matriz NÃO pega ----
-# Precisa de DOIS IPs de origem distintos. Motivo: com `limit_by: ip`, dois tokens enviados da
-# mesma máquina (pelo mesmo port-forward) chegam ao Kong com o MESMO IP e compartilham a cota —
-# comportamento CORRETO, que um teste ingênuo confunde com contador global.
+# ---- Teste de isolamento do rate limit: determinístico, dois IPs de origem ----
 #
-# Uma versão anterior deste teste usava dois tokens da mesma origem e acusava falha num sistema
-# correto. E a matriz de token único, antes dela, aprovava um sistema com bucket global de verdade
-# (`limit_by: consumer`, onde todo token casa com o mesmo KongConsumer porque todos têm
-# `iss: FiapCloudGames`). Nenhum dos dois discriminava; dois pods discriminam.
+# Duas armadilhas que versões anteriores deste bloco tiveram, e que este desenho evita:
+#
+# 1) JANELA FIXA. O rate-limiting do Kong usa janela alinhada ao MINUTO DE PAREDE, não deslizante
+#    (medido: RateLimit-Reset = 60 - segundo atual). Se a virada do minuto cair entre o pod A
+#    esgotar e o pod B pedir, o contador zera e B recebe 200 MESMO COM CONTADOR GLOBAL — o teste
+#    aprovaria o defeito. Por isso: (a) só começa com janela fresca, e (b) reconfirma no FINAL que
+#    A continua em 429, o que prova que a janela não virou durante a medição.
+# 2) IP compartilhado. Dois tokens da mesma origem não discriminam nada: com limit_by: ip eles
+#    compartilham a cota por definição. Só dois IPs de origem distintos separam as hipóteses.
+#
+# NOTA sobre o que este teste mede: ele prova isolamento entre PODS (IPs internos). NÃO prova
+# isolamento entre clientes externos — via port-forward ou NodePort com externalTrafficPolicy:
+# Cluster, todo cliente externo chega com o mesmo IP e o bucket é global. Isso é limitação
+# conhecida, documentada no README, e este teste não a contradiz.
 echo "==> Isolamento do rate limit (dois pods, IPs distintos)"
 URL_INT="http://kong-kong-proxy.kong.svc.cluster.local:80/api/v1/jogos"
 POD_IMG="curlimages/curl:8.11.1"
 
-# Pod A esgota a cota do PRÓPRIO IP.
-A_OUT=$(kubectl -n fcg run rl-a-$$ --rm -i --restart=Never --image="$POD_IMG" --quiet \
-  --env="TK=$TOKEN" -- sh -c "
-    for i in \$(seq 1 140); do
-      curl -s -o /dev/null -w '%{http_code}\n' -H 'Host: api.fcg.local' \
-        -H \"Authorization: Bearer \$TK\" $URL_INT
-    done | sort | uniq -c
-  " 2>/dev/null || true)
-echo "$A_OUT" | sed 's/^/     pod A: /'
+reset_secs() {
+  curl -si -H "$HOSTH" -H "Authorization: Bearer $TOKEN" "$GW/api/v1/jogos" \
+    | tr -d '\r' | awk '/^RateLimit-Reset:/{print $2; exit}'
+}
 
-# Pod B: IP diferente, UMA requisição. Tem de passar.
-B_CODE=$(kubectl -n fcg run rl-b-$$ --rm -i --restart=Never --image="$POD_IMG" --quiet \
-  --env="TK=$TOKEN" -- sh -c "
-    curl -s -o /dev/null -w '%{http_code}' -H 'Host: api.fcg.local' \
-      -H \"Authorization: Bearer \$TK\" $URL_INT
-  " 2>/dev/null | tr -d '[:space:]' || true)
-
-if echo "$A_OUT" | grep -q 429; then
-  printf "  OK   %-46s cota do IP A esgotada\n" "10a. limite aplicado por IP"
-else
-  printf "  FALHA %-45s pod A nunca recebeu 429\n" "10a. limite aplicado por IP"; FALHAS=$((FALHAS+1))
+RS="$(reset_secs || echo 0)"
+if [ "${RS:-0}" -lt 30 ]; then
+  echo "     janela expira em ${RS}s — aguardando a virada para medir numa janela inteira"
+  sleep "$((RS + 2))"
 fi
 
-if [ "$B_CODE" = "200" ]; then
-  printf "  OK   %-46s pod B (outro IP): 200\n" "10b. isolamento entre IPs"
+# Pods PERSISTENTES (não --rm): IP estável e permitem reconsultar A depois de B, na mesma janela.
+for P in "$POD_A" "$POD_B"; do
+  kubectl -n fcg run "$P" --image="$POD_IMG" --restart=Never --command -- sleep 600 >/dev/null 2>&1
+done
+for P in "$POD_A" "$POD_B"; do
+  kubectl -n fcg wait --for=condition=Ready "pod/$P" --timeout=90s >/dev/null 2>&1 \
+    || { printf "  FALHA %-45s pod %s nao ficou Ready\n" "10. isolamento" "$P"; FALHAS=$((FALHAS+1)); }
+done
+
+# Token vai por stdin para um arquivo dentro do pod — não em --env, que o exporia no spec do Pod
+# para qualquer um com `get pods` no namespace.
+for P in "$POD_A" "$POD_B"; do
+  printf '%s' "$TOKEN" | kubectl -n fcg exec -i "$P" -- sh -c 'cat > /tmp/tk' >/dev/null 2>&1
+done
+
+req() { kubectl -n fcg exec "$1" -- sh -c \
+  "curl -s -o /dev/null -w '%{http_code}' -H 'Host: api.fcg.local' -H \"Authorization: Bearer \$(cat /tmp/tk)\" $URL_INT" 2>/dev/null | tr -d '[:space:]'; }
+
+A_COUNTS=$(kubectl -n fcg exec "$POD_A" -- sh -c \
+  "for i in \$(seq 1 140); do curl -s -o /dev/null -w '%{http_code}\n' -H 'Host: api.fcg.local' -H \"Authorization: Bearer \$(cat /tmp/tk)\" $URL_INT; done | sort | uniq -c" 2>/dev/null)
+echo "$A_COUNTS" | sed 's/^/     pod A: /'
+
+A_OK=$(echo "$A_COUNTS" | awk '$2==200{print $1}'); A_OK=${A_OK:-0}
+A_429=$(echo "$A_COUNTS" | awk '$2==429{print $1}'); A_429=${A_429:-0}
+A_MID=$(req "$POD_A")          # A ainda limitado?
+B_CODE=$(req "$POD_B")         # B, outro IP, na MESMA janela
+A_END=$(req "$POD_A")          # A ainda limitado DEPOIS de B -> a janela não virou
+
+# 10a: o limite foi aplicado, e perto do configurado (um `minute: 1` acidental não passaria).
+if [ "$A_429" -gt 0 ] && [ "$A_OK" -ge 100 ] && [ "$A_MID" = "429" ]; then
+  printf "  OK   %-46s %s×200 + %s×429, A segue 429\n" "10a. limite aplicado por IP" "$A_OK" "$A_429"
 else
-  printf "  FALHA %-45s pod B (outro IP): %s -> contador GLOBAL\n" "10b. isolamento entre IPs" "${B_CODE:-vazio}"
-  FALHAS=$((FALHAS+1))
+  printf "  FALHA %-45s 200=%s 429=%s A_apos=%s (esperado ~120/+ e 429)\n" \
+    "10a. limite aplicado por IP" "$A_OK" "$A_429" "${A_MID:-vazio}"; FALHAS=$((FALHAS+1))
+fi
+
+# 10b: B passa E A continua bloqueado -> o 200 de B não veio de virada de janela.
+if [ "$B_CODE" = "200" ] && [ "$A_END" = "429" ]; then
+  printf "  OK   %-46s B(outro IP)=200 com A ainda em 429\n" "10b. isolamento entre IPs"
+elif [ "$B_CODE" = "200" ] && [ "$A_END" != "429" ]; then
+  printf "  FALHA %-45s B=200 mas A voltou a %s — a janela virou, resultado INCONCLUSIVO\n" \
+    "10b. isolamento entre IPs" "${A_END:-vazio}"; FALHAS=$((FALHAS+1))
+else
+  printf "  FALHA %-45s B(outro IP)=%s -> contador GLOBAL entre pods\n" \
+    "10b. isolamento entre IPs" "${B_CODE:-vazio}"; FALHAS=$((FALHAS+1))
 fi
 
 echo

@@ -22,8 +22,12 @@ data:
   # Operação atrás do Kong (issue #26). X-Forwarded-* é header que o CLIENTE controla, então a
   # confiança fica restrita às redes do cluster: pods e Services do minikube. Sem isto o users-api
   # vê o IP do pod do Kong para TODOS os clientes, e o rate limiter de login (que particiona por
-  # Connection.RemoteIpAddress) vira um bucket global — alguém errando a senha bloquearia o login
-  # de todos. Os MESMOS CIDRs valem para o catalog-api.
+  # Connection.RemoteIpAddress) veria um IP só. Os MESMOS CIDRs valem para o catalog-api.
+  #
+  # ⚠️ MAS ISTO NÃO RESOLVE o bucket global do login hoje: o Kong escreve no X-Forwarded-For o IP
+  # que ELE enxerga, e via port-forward/NodePort esse valor é 127.0.0.1 (ou o IP do nó) para todos
+  # os clientes. Então o rate limiter de login continua efetivamente global. Limitação conhecida,
+  # documentada no README; sairia com um LoadBalancer preservando IP de origem.
   #
   # ⚠️ O users-api#21 adicionou estas chaves em users-api/k8s/configmap.yaml, que NÃO é aplicado
   # pelo scripts/deploy-minikube.sh (ele aplica apenas orchestration/k8s/). Sem esta cópia aqui, a

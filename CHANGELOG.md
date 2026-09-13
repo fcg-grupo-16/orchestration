@@ -14,7 +14,8 @@ e o versionamento adere a [Semantic Versioning](https://semver.org/lang/pt-BR/).
   `gateway/kong-values.yaml` (values do chart, pinado em 3.4.1) e `k8s/gateway/` com
   `KongConsumer` + credencial, os plugins e as três rotas. (#26)
 - **`scripts/gateway-test.sh`**: executa a matriz de aceite do gateway contra o cluster, incluindo
-  o teste de **dois tokens** que distingue rate limit por IP de bucket global. (#26)
+  o teste de **dois pods** (IPs de origem distintos), que é o único capaz de distinguir isolamento
+  por IP de contador global — dois tokens da mesma origem não distinguem. (#26)
 - `ForwardedHeaders__*` no ConfigMap de `k8s/20-users-api.yaml`. O `users-api#21` as adicionou no
   ConfigMap do próprio repo, que **não** é aplicado pelo `deploy-minikube.sh` — sem esta cópia a
   feature nascia inerte no cluster e o rate limiter de login viraria bucket global. (#26)
@@ -41,14 +42,19 @@ e o versionamento adere a [Semantic Versioning](https://semver.org/lang/pt-BR/).
   401 **também com token válido**, por não haver credencial para casar com a claim `iss`.
 - **`limit_by: consumer` NÃO limita por usuário nesta topologia.** Todo token emitido pelo
   `users-api` tem `iss: FiapCloudGames`, e o plugin `jwt` resolve o consumer por essa claim — logo
-  todos os usuários casam com o único `KongConsumer` e o contador é **global** — um usuário
-  derrubaria todos pela porta única. O rate limit usa `limit_by: ip`, verificado com dois pods de
-  IPs distintos: o pod A esgota a cota (120×200, depois 429) e o pod B, de outro IP, segue em 200.
-  **O IP que conta é o que o Kong enxerga**, e o `ForwardedHeaders__*` dos serviços não influencia
-  isso: ele governa o `RemoteIpAddress` visto por `users-api`/`catalog-api`, enquanto o Kong só
-  confiaria em `X-Forwarded-For` com `trusted_ips`/`real_ip_header` configurados nele — o que não é
-  o caso. Atrás de NAT, os clientes compartilham a cota; via `port-forward`, todo o tráfego vira um
-  único IP (por isso o teste de isolamento usa dois pods, não dois tokens).
+  todos os usuários casam com o único `KongConsumer` e o contador é **global por construção**.
+  O rate limit passou a usar `limit_by: ip`, que é o menos errado dos declaráveis — mas
+  **o bucket continua global para todo cliente externo, e isso é limitação conhecida, não corrigida**:
+  via `port-forward` (único caminho documentado) o Kong registra `127.0.0.1` para todas as
+  requisições, e via NodePort o `externalTrafficPolicy: Cluster` faz SNAT para o IP do nó. O
+  contador também é compartilhado entre as 5 rotas protegidas (medido: 116→115→114→113→112). São
+  120/min para a plataforma inteira vista de fora. O `ForwardedHeaders__*` dos serviços não muda
+  isso — ele governa o `RemoteIpAddress` lido do `X-Forwarded-For` que o Kong escreve, e esse valor
+  é `127.0.0.1` para todos, então o rate limiter de login do `users-api` também é global.
+- **Requisição não autenticada não consome cota nas rotas protegidas.** O plugin `jwt` (prioridade
+  1005) roda antes do `rate-limiting` (901) e encerra a requisição: o 401 sai sem headers
+  `RateLimit-*`. Flood anônimo com token inválido não é limitado na borda; prioridade de plugin no
+  Kong é fixa por tipo. O caminho anônimo é coberto pelo limite das rotas públicas.
 - **A Admin API do Kong fica desabilitada (default do chart).** Habilitá-la, mesmo como
   `ClusterIP`, expõe `GET /consumers/.../jwt` — que devolve a chave HS256 **em claro** — a qualquer
   pod do cluster; com ela se forja um token de admin, e a chave é a mesma nos três validadores.

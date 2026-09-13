@@ -25,32 +25,41 @@ config:
   # Não exigir JWT no preflight CORS (OPTIONS): senão o browser nem consegue perguntar.
   run_on_preflight: false
 ---
-# RATE LIMITING na borda, por IP do cliente.
+# RATE LIMITING na borda — com uma LIMITAÇÃO IMPORTANTE que não é contornável aqui.
 #
-# ⚠️ NÃO use `limit_by: consumer` aqui. Uma versão anterior usava, com o comentário de que "o
-# limite é POR TOKEN". Isso é FALSO na nossa topologia e foi medido no cluster:
+# ⚠️ NA PRÁTICA ESTE É UM BUCKET GLOBAL PARA TODO CLIENTE EXTERNO. Medido no cluster:
 #
-#   O plugin jwt resolve o consumer pela claim `iss`, e TODO token emitido pelo users-api tem
-#   `iss: FiapCloudGames`. Logo todos os usuários casam com o ÚNICO KongConsumer que existe, e
-#   `limit_by: consumer` colapsa num contador GLOBAL da plataforma. Medição:
-#     token B -> 200 | token A consome 125 req (119×200 + 6×429) | token B de novo -> 429
-#   Um usuário esgota a cota e derruba TODOS os outros pela porta de entrada única. Auto-DoS.
+#   • Via `kubectl port-forward` (o único caminho de acesso documentado): o access log do Kong
+#     registra 127.0.0.1 para TODAS as requisições, de qualquer cliente.
+#   • Via NodePort 30080: o Service kong-kong-proxy tem `externalTrafficPolicy: Cluster`, então o
+#     kube-proxy faz SNAT e todo cliente externo chega com o IP do nó.
+#   • O contador é compartilhado entre as 5 rotas protegidas. Medido em sequência:
+#     jogos=116 -> biblioteca=115 -> pedidos=114 -> jogos=113 -> avaliacoes=112.
 #
-#   `limit_by: credential` tem o mesmo defeito (a credencial também é única). Limite por usuário
-#   exigiria um KongConsumer por usuário, o que não é declarável para usuários dinâmicos.
+#   Consequência: são 120/min para a PLATAFORMA INTEIRA vista de fora, e um cliente que esgote a
+#   cota faz todos os outros receberem 429. Isto NÃO foi corrigido — é limitação conhecida.
 #
-# `limit_by: ip` é o que resta como opção declarável.
+# Por que `limit_by: ip` ainda assim, e não `consumer`: com `consumer` o colapso é garantido por
+# construção, independente de topologia, porque todo JWT do users-api tem `iss: FiapCloudGames` e
+# o plugin jwt resolve o consumer por essa claim — todos casam com o ÚNICO KongConsumer.
+# `limit_by: credential` tem o mesmo defeito. Limite real por usuário exigiria um KongConsumer por
+# usuário, o que não é declarável para usuários dinâmicos. `ip` é o menos errado dos declaráveis, e
+# passa a isolar de verdade se um dia houver LoadBalancer real com preservação de IP de origem
+# (`externalTrafficPolicy: Local`) ou `trusted_ips`/`real_ip_header` configurados NO KONG.
 #
-# ⚠️ E o IP que conta é o que o KONG enxerga. Uma versão anterior deste comentário dizia que o
-# `ForwardedHeaders` dos serviços tornava isso "o IP do cliente real" — RACIOCÍNIO ERRADO:
-# `ForwardedHeaders__*` governa o `RemoteIpAddress` visto por users-api/catalog-api, não o
-# contador do Kong. O Kong só confiaria em X-Forwarded-For com `trusted_ips`/`real_ip_header`
-# configurados NELE, o que não é o caso hoje.
+# ⚠️ E o `ForwardedHeaders__*` dos serviços NÃO ajuda aqui: ele governa o RemoteIpAddress que
+# users-api/catalog-api leem do X-Forwarded-For que o Kong escreve — e esse valor é 127.0.0.1 para
+# todos. Então o rate limiter de login do próprio users-api também é global hoje.
 #
-# Consequência prática, medida com dois pods: IPs distintos têm cotas independentes (pod A esgota
-# com 120×200 e o pod B, de outro IP, segue em 200). Atrás de NAT, os clientes compartilham a
-# cota; via `kubectl port-forward` todo o tráfego vira um único IP — por isso o teste de
-# isolamento do gateway-test.sh usa dois pods, e não dois tokens.
+# ⚠️ SEGUNDA LIMITAÇÃO: requisição NÃO AUTENTICADA não consome cota nas rotas protegidas.
+# O plugin jwt (prioridade 1005) roda ANTES do rate-limiting (901) e encerra a requisição, então a
+# resposta 401 sai SEM headers RateLimit-* (medido: 0 headers no 401, 3 no 200). Um flood anônimo
+# com `Authorization: Bearer lixo` nas rotas protegidas não é limitado na borda. Prioridade de
+# plugin no Kong é fixa por tipo — não há como invertê-la declarativamente. O que protege o
+# caminho anônimo é o fcg-rate-limit-publico, aplicado às rotas públicas.
+#
+# `policy: local` = contadores na memória de cada réplica. Com 1 réplica é exato; com N réplicas o
+# limite efetivo seria N × minute.
 #
 # `policy: local` = contadores na memória de cada réplica. Com 1 réplica (nosso caso) é exato;
 # com N réplicas o limite efetivo seria N × minute. Contador global exigiria `policy: redis`.
