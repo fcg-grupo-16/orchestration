@@ -46,10 +46,12 @@ proxy:
 #   • DB-less não é read-only: `POST /config` substitui a configuração declarativa inteira — é
 #     assim que o próprio KIC empurra config. Um pod pode remover o plugin jwt até o próximo
 #     reconcile.
-#   • Habilitar também troca o listener de loopback para 0.0.0.0:8001 (confirmado em
-#     KONG_ADMIN_LISTEN), porque o chart só força 127.0.0.1 quando `enabled: false`. No 3.4.1 o
-#     listener resultante é `0.0.0.0:8444 ssl` (o chart traz `admin.http.enabled: false` e
-#     `admin.tls.enabled: true`), não `:8001` — hoje o pod mostra `127.0.0.1:8444 http2 ssl`.
+#   • Habilitar também abre o listener para fora do loopback, porque o chart só força 127.0.0.1
+#     quando `enabled: false`. Medido com `helm template` no 3.4.1 (que traz
+#     `admin.http.enabled: false` e `admin.tls.enabled: true`):
+#         --set admin.enabled=true -> KONG_ADMIN_LISTEN=0.0.0.0:8444 http2 ssl, [::]:8444 http2 ssl
+#         values deste repo       -> KONG_ADMIN_LISTEN=127.0.0.1:8444 http2 ssl, [::1]:8444 http2 ssl
+#     (o segundo confere com o pod em execução).
 #
 # O KIC fala com o listener interno do pod, então desabilitar não custa nada.
 

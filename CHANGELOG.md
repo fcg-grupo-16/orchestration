@@ -30,7 +30,9 @@ e o versionamento adere a [Semantic Versioning](https://semver.org/lang/pt-BR/).
   os kinds de `configuration.konghq.com` **a partir do cluster** em vez de uma lista fixa (e o
   delete dos CRDs passou a derivar da mesma enumeração), a contar releases em **qualquer** namespace
   — excluir o namespace `kong` deixava escapar justamente um `kong-dev` instalado nele —, e a
-  **falhar fechado**: qualquer sonda que não consiga se pronunciar preserva os CRDs. O `helm
+  **falhar fechado** nas duas sondas: a de releases Helm e a de CRs — esta última descartava o
+  status do `kubectl` (em pipeline o exit é o do `wc`), então um `get` falhando era lido como
+  "nenhum CR fora de `fcg`". O `helm
   uninstall` deixou de ser silenciado com `|| true`. (#26)
 - **`GET /api/v1/jogos` passa a exigir token quando acessado pelo gateway**, embora siga
   `[AllowAnonymous]` no serviço. Evita rota ambígua por método no mesmo path e torna a

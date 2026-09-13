@@ -20,9 +20,12 @@ done
 
 PF=""
 TMPD="$(mktemp -d)"
-# Marca o início da execução: a limpeza só remove refresh_token criado DEPOIS disto, para nunca
-# apagar sessão que o script não gerou.
-INICIO="$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"
+# Marca o início da execução. O relógio vem do PRÓPRIO Mongo, não do host: `date -u` local com
+# milissegundos truncados abria uma janela de ~1s em que um refresh_token de terceiro, criado
+# imediatamente antes, seria apagado (medido: pod 0,087s à frente do host; com driver de VM o drift
+# pode ser bem maior). Fallback no host se o exec falhar — a janela volta, mas o teste não trava.
+INICIO="$(kubectl -n fcg exec mongodb-0 -- date -u +%Y-%m-%dT%H:%M:%S.%3NZ 2>/dev/null | tr -d '\r')"
+[ -n "$INICIO" ] || INICIO="$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"
 POD_A="rl-a-$$"; POD_B="rl-b-$$"
 # O --rm do `kubectl run` é client-side: um Ctrl-C deixaria os pods rodando e martelando o gateway,
 # consumindo a cota das execuções seguintes. Por isso os pods entram no cleanup explicitamente.
@@ -35,8 +38,9 @@ cleanup() {
   #     NÃO cria refresh_token — medido: delta de refresh_tokens = 0 num signup;
   #   • quem cria refresh_token são os LOGINS do próprio teste (dois por execução, do admin), e
   #     esses eram o resíduo que de fato crescia (39 tokens acumulados, 34 do admin).
-  # Por isso a limpeza remove a conta criada e os tokens do admin gerados DEPOIS do início desta
-  # execução — nunca tokens anteriores, que podem ser de sessão de outra pessoa.
+  # Por isso a limpeza remove a conta criada e os tokens do admin gerados depois do instante em que
+  # esta execução começou, medido pelo relógio do próprio Mongo — não tokens anteriores, que podem
+  # ser sessão de outra pessoa.
   if [ -n "${EMAIL:-}" ]; then
     kubectl -n fcg exec mongodb-0 -- mongosh --quiet usersdb --eval \
       "var u=db.usuarios.findOne({Email:'$EMAIL'},{_id:1});
@@ -102,16 +106,28 @@ RL=$(curl -si -H "$HOSTH" -H "Authorization: Bearer $TOKEN" "$GW/api/v1/jogos" |
 
 # O fcg-rate-limit-publico foi criado para fechar o caminho de ESCRITA anônimo, mas nenhuma
 # asserção o exercitava — um typo nele passaria verde no CI (o kubeconform pula CRDs do Kong) E na
-# matriz. Verificação por HEADER de propósito: é barata e não gasta a cota de 20/min que o teste 6
-# precisa para cadastrar.
+# matriz. Verificação por HEADER de propósito: não precisa esgotar o limite para provar que ele
+# existe.
 # A asserção mede a rota de CADASTRO, que é o caminho de escrita citado acima — medir só o login
 # deixava o buraco aberto: apagar `fcg-rate-limit-publico` da annotation do Ingress de cadastro
-# mantinha o teste verde. E-mail duplicado de propósito: devolve 409 sem criar conta e sem gastar a
-# cota de 20/min que o teste 6 precisa.
+# mantinha o teste verde. E-mail duplicado de propósito: devolve 409 sem criar conta.
+#
+# ⚠️ Isto GASTA cota, ao contrário do que uma versão anterior deste comentário afirmava. Medido:
+# POSTs duplicados consomem o bucket público (Remaining 19 -> 18 -> 17) e o login COMPARTILHA o
+# mesmo contador (19 -> 18). O que protege o teste 6 é a ORDEM — 9b e 9c rodam depois dele —, e a
+# execução inteira gasta 4 das 20 unidades, não a gratuidade da medição.
+#
+# NOTA: o POST duplicado faz o users-api registrar uma linha de nível Error com stack trace
+# (ConflitoDeDadosException) por execução, ainda que a resposta ao cliente seja 409 corretamente.
 printf '{"nome":"Dup","email":"admin@fcg.com","senha":"Teste@123456"}' > "$TMPD/dup.json"
-RLC=$(curl -si -H "$HOSTH" -H 'Content-Type: application/json' --data-binary @"$TMPD/dup.json" \
-  "$GW/api/v1/usuarios" | tr -d '\r' | awk '/^RateLimit-Limit:/{print $2; exit}')
+DUP=$(curl -si -H "$HOSTH" -H 'Content-Type: application/json' --data-binary @"$TMPD/dup.json" \
+  "$GW/api/v1/usuarios" | tr -d '\r')
+RLC=$(printf '%s\n' "$DUP" | awk '/^RateLimit-Limit:/{print $2; exit}')
+DUPST=$(printf '%s\n' "$DUP" | awk '/^HTTP/{print $2; exit}')
 check "9b. cadastro publico limitado a 20/min" 20 "${RLC:-vazio}"
+# O status também é asserção: a de header passaria verde mesmo com 201, e um 201 aqui criaria uma
+# conta que a limpeza NÃO remove (ela só apaga $EMAIL). Hoje o 409 depende do admin semeado.
+check "9b2. cadastro duplicado nao cria conta" 409 "${DUPST:-vazio}"
 RLP=$(curl -si -H "$HOSTH" -H 'Content-Type: application/json' --data-binary @"$TMPD/login.json" \
   "$GW/api/v1/auth/login" | tr -d '\r' | awk '/^RateLimit-Limit:/{print $2; exit}')
 check "9c. login publico limitado a 20/min" 20 "${RLP:-vazio}"

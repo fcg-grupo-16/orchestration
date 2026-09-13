@@ -71,14 +71,25 @@ fi
 
 # Os kinds vêm DO CLUSTER, não de uma lista fixa: hardcodar um kind que a versão instalada do KIC
 # não tenha faz o `kubectl get` falhar INTEIRO e devolver vazio — outro caminho de falha aberta.
-KINDS=$(kubectl api-resources --api-group=configuration.konghq.com -o name 2>/dev/null \
-  | tr '\n' ',' | sed 's/,$//')
+# TODOS os grupos que terminam em konghq.com, não só `configuration.`: assim o guard e o delete
+# usam a MESMA lista. Enumerar só um grupo fazia o delete (que casava `konghq.com$`) ter escopo MAIOR
+# que o guard — e, ao alinhá-los pelo grupo fixo, um grupo novo trazido por upgrade do KIC passaria a
+# ser ignorado em silêncio nos dois.
+KINDS=$(kubectl api-resources -o name 2>/dev/null | grep 'konghq\.com$' | tr '\n' ',' | sed 's/,$//')
 if [ -n "$KINDS" ]; then
   # NOTA: KongClusterPlugin, KongVault e KongLicense são CLUSTER-SCOPED e saem sem coluna de
   # namespace, então `$1!="fcg"` os conta como "fora de fcg". Isso falha FECHADO (preserva os CRDs),
   # que é o comportamento certo aqui — mas se a plataforma um dia adotar um KongClusterPlugin, o
   # undeploy passa a nunca limpar os CRDs, com a mensagem enganosa "há CRs fora de fcg".
-  CRS_FORA=$(kubectl get "$KINDS" -A --no-headers 2>/dev/null | awk '$1!="fcg"' | wc -l | tr -d ' ')
+  # O status do `kubectl` tem de ser TESTADO, não descartado: em pipeline o exit é o do último
+  # comando (`wc`), então `kubectl get | awk | wc` falhando devolvia CRS_FORA=0 com exit 0 — a sonda
+  # se pronunciava com confiança FALSA e os CRDs eram apagados. Medido: com kind inexistente,
+  # CRS_FORA='0' e exit=0. Era o MESMO fail-open que o comentário 8 linhas acima diz evitar.
+  if CRS_OUT=$(kubectl get "$KINDS" -A --no-headers 2>/dev/null); then
+    CRS_FORA=$(printf '%s\n' "$CRS_OUT" | awk 'NF && $1!="fcg"' | wc -l | tr -d ' ')
+  else
+    PRESERVAR="${PRESERVAR:-não foi possível listar os CRs do Kong}"
+  fi
 else
   PRESERVAR="${PRESERVAR:-não foi possível enumerar os kinds de configuration.konghq.com}"
 fi
@@ -88,10 +99,12 @@ if [ -z "$PRESERVAR" ] && [ "${OUTROS_RELEASES:-0}" -eq 0 ] && [ "${CRS_FORA:-0}
   # delete apagava tudo que casasse `konghq.com$` — divergência latente (hoje o chart 3.4.1 só tem
   # CRDs desse grupo, mas nada garantia isso). Sem `xargs -r`, que não existe no xargs do BSD/macOS:
   # aqui $KINDS é comprovadamente não-vazio, então a expansão direta é segura.
-  # shellcheck disable=SC2086
+  # shellcheck disable=SC2046
   kubectl delete crd $(echo "$KINDS" | tr ',' ' ') --ignore-not-found
 else
-  echo "==> CRDs do Kong PRESERVADOS: ${PRESERVAR:-há outro release (${OUTROS_RELEASES:-?}) ou CRs fora de fcg (${CRS_FORA:-?})}"
+  echo "==> CRDs do Kong PRESERVADOS: ${PRESERVAR:-há release kong-* no cluster \
+(${OUTROS_RELEASES:-?}) — pode ser a nossa, se o uninstall acima não rodou — ou CRs fora de fcg \
+(${CRS_FORA:-?})}"
 fi
 
 echo "Recursos FCG e gateway removidos."
