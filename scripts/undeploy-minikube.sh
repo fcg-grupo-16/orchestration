@@ -51,17 +51,35 @@ kubectl delete namespace kong --ignore-not-found
 # Kong chamado `kong-dev` ou `my-kong` não casava, o guard via 0 e os CRDs cluster-wide eram
 # apagados, levando os CRs daquele release em cascata — exatamente o dano que este bloco previne.
 # Agora o filtro é pelo CHART (kong-*), em qualquer namespace que não seja o nosso.
-OUTROS_RELEASES=$(helm list -A -o json 2>/dev/null \
-  | python3 -c 'import sys,json;print(sum(1 for r in json.load(sys.stdin) if r.get("chart","").startswith("kong-") and r.get("namespace")!="kong"))' 2>/dev/null || echo 0)
-# Todos os kinds do grupo konghq.com, não só dois: um kongclusterplugin ou tcpingress de terceiro
-# também morreria junto com os CRDs.
-CRS_FORA=$(kubectl get kongplugins,kongclusterplugins,kongconsumers,kongingresses,tcpingresses,udpingresses \
-  -A --no-headers 2>/dev/null | awk '$1!="fcg"' | wc -l | tr -d ' ')
-if [ "${OUTROS_RELEASES:-0}" -eq 0 ] && [ "${CRS_FORA:-0}" -eq 0 ]; then
+# ⚠️ FAIL-SAFE: qualquer sonda que NÃO CONSIGA se pronunciar PRESERVA os CRDs.
+# A primeira versão deste guard falhava ABERTO: `... || echo 0` em pipeline quebrada (python3
+# ausente, kind inexistente) era lido como "não há outro release do Kong", e os CRDs eram apagados
+# justamente no caso em que não se sabia se havia. Guard de segurança tem de falhar fechado.
+PRESERVAR=""
+
+if command -v python3 >/dev/null 2>&1; then
+  OUTROS_RELEASES=$(helm list -A -o json 2>/dev/null \
+    | python3 -c 'import sys,json;print(sum(1 for r in json.load(sys.stdin) if r.get("chart","").startswith("kong-") and r.get("namespace")!="kong"))' 2>/dev/null) \
+    || PRESERVAR="não foi possível inspecionar os releases Helm"
+  [ -n "${OUTROS_RELEASES:-}" ] || PRESERVAR="${PRESERVAR:-lista de releases Helm vazia ou ilegível}"
+else
+  PRESERVAR="python3 ausente — sem como inspecionar os releases Helm com segurança"
+fi
+
+# Os kinds vêm DO CLUSTER, não de uma lista fixa: hardcodar um kind que a versão instalada do KIC
+# não tenha faz o `kubectl get` falhar INTEIRO e devolver vazio — outro caminho de falha aberta.
+KINDS=$(kubectl api-resources --api-group=configuration.konghq.com -o name 2>/dev/null \
+  | tr '\n' ',' | sed 's/,$//')
+if [ -n "$KINDS" ]; then
+  CRS_FORA=$(kubectl get "$KINDS" -A --no-headers 2>/dev/null | awk '$1!="fcg"' | wc -l | tr -d ' ')
+else
+  PRESERVAR="${PRESERVAR:-não foi possível enumerar os kinds de configuration.konghq.com}"
+fi
+if [ -z "$PRESERVAR" ] && [ "${OUTROS_RELEASES:-0}" -eq 0 ] && [ "${CRS_FORA:-0}" -eq 0 ]; then
   echo "==> Removendo os CRDs do Kong"
   kubectl get crd -o name 2>/dev/null | grep 'konghq.com$' | xargs -r kubectl delete --ignore-not-found
 else
-  echo "==> CRDs do Kong PRESERVADOS: há outro release (${OUTROS_RELEASES}) ou CRs fora de fcg (${CRS_FORA})"
+  echo "==> CRDs do Kong PRESERVADOS: ${PRESERVAR:-há outro release (${OUTROS_RELEASES:-?}) ou CRs fora de fcg (${CRS_FORA:-?})}"
 fi
 
 echo "Recursos FCG e gateway removidos."

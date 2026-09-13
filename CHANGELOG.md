@@ -26,9 +26,10 @@ e o versionamento adere a [Semantic Versioning](https://semver.org/lang/pt-BR/).
   de implementação: a versão anterior desta entrega aceitava `?jwt=<token>` e deixava `OPTIONS`
   anônimo atravessar. (#26)
 - `scripts/undeploy-minikube.sh`: o guard dos CRDs passou a filtrar por **chart** (`kong-*`) em vez
-  de por nome de release (`helm list -f` casa com o nome, então um `kong-dev` escapava), passou a
-  contar todos os kinds de `konghq.com`, e o `helm uninstall` deixou de ser silenciado com
-  `|| true`. (#26)
+  de por nome de release (`helm list -f` casa com o nome, então um `kong-dev` escapava), a enumerar
+  os kinds de `configuration.konghq.com` **a partir do cluster** em vez de uma lista fixa, e a
+  **falhar fechado**: qualquer sonda que não consiga se pronunciar preserva os CRDs. O `helm
+  uninstall` deixou de ser silenciado com `|| true`. (#26)
 - **`GET /api/v1/jogos` passa a exigir token quando acessado pelo gateway**, embora siga
   `[AllowAnonymous]` no serviço. Evita rota ambígua por método no mesmo path e torna a
   demonstração inequívoca. Acesso interno (pod-a-pod, Prometheus, testes) não muda. (#26)
