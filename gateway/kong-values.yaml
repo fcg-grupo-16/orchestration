@@ -31,13 +31,25 @@ proxy:
     # Ambiente de demo: sem TLS. TLS no gateway está explicitamente fora do escopo da #26.
     enabled: false
 
-admin:
-  # Admin API apenas interna (ClusterIP). Em DB-less a fonte da verdade é o Kubernetes, então a
-  # Admin API é read-only na prática — e não deve ser exposta fora do cluster de forma alguma.
-  enabled: true
-  http:
-    enabled: true
-  type: ClusterIP
+# ⚠️ NÃO habilite a Admin API. O default do chart é `admin.enabled: false`, e é o correto.
+#
+# Uma versão anterior deste arquivo a habilitava com `type: ClusterIP`, na suposição de que
+# "interno = seguro" e de que em DB-less ela seria "read-only". As duas premissas são FALSAS, e
+# foram medidas no cluster:
+#
+#   • ClusterIP é alcançável por QUALQUER pod. De um pod comum do namespace fcg:
+#       GET http://kong-kong-admin.kong.svc.cluster.local:8001/status            -> 200
+#       GET http://kong-kong-admin.kong.svc.cluster.local:8001/consumers/.../jwt
+#         -> {"secret":"FiapCloudGames_Demo_SecretKey_..."}  ← a chave HS256 EM CLARO
+#     Com ela, qualquer pod forja um token com role de admin. E como a chave é a MESMA em
+#     users-api e catalog-api, é bypass total de autenticação na plataforma.
+#   • DB-less não é read-only: `POST /config` substitui a configuração declarativa inteira — é
+#     assim que o próprio KIC empurra config. Um pod pode remover o plugin jwt até o próximo
+#     reconcile.
+#   • Habilitar também troca o listener de loopback para 0.0.0.0:8001 (confirmado em
+#     KONG_ADMIN_LISTEN), porque o chart só força 127.0.0.1 quando `enabled: false`.
+#
+# O KIC fala com o listener interno do pod, então desabilitar não custa nada.
 
 # ⚠️ DESABILITADOS POR SEGURANÇA — os dois vêm `enabled: true` no default do chart.
 #

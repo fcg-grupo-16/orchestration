@@ -9,6 +9,15 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 PARENT_DIR="$(cd "$ROOT_DIR/.." && pwd)"
 SERVICES=(users-api catalog-api payments-api notifications-api)
 
+# Pré-requisito NOVO desta fase: o Kong 3.x só é distribuído por Helm. Checado ANTES de qualquer
+# mutação no cluster — sem isto, o script já teria aplicado o controller de Sealed Secrets e só
+# então morreria em "helm: command not found", deixando o cluster em estado parcial.
+# Mesmo padrão de scripts/seal-secrets.sh.
+if ! command -v helm >/dev/null 2>&1; then
+  echo "ERRO: 'helm' não encontrado. Instale com: brew install helm" >&2
+  exit 1
+fi
+
 echo "==> Garantindo que o minikube está rodando"
 minikube status >/dev/null 2>&1 || minikube start
 
@@ -61,6 +70,15 @@ done
 
 echo "==> Migração Deployment→StatefulSet do MongoDB (kinds diferentes; no-op em cluster limpo)"
 kubectl -n fcg delete deployment mongodb --ignore-not-found
+
+# Porta de entrada ÚNICA (issue #26): remove o Ingress NGINX legado.
+# `kubectl apply -R -f k8s/` NUNCA deleta um objeto cujo manifesto saiu do diretório — então
+# apagar k8s/30-ingress.yaml do git não basta: em qualquer cluster que já rodou a main, o
+# `fcg-ingress` continuaria servindo users.fcg.local e catalog.fcg.local SEM validação de JWT,
+# em paralelo ao Kong. O critério "porta de entrada única" seria falso fora de cluster limpo.
+# No-op em cluster novo, como a migração do MongoDB acima.
+echo "==> Removendo o Ingress NGINX legado (substituído pelo Kong)"
+kubectl -n fcg delete ingress fcg-ingress --ignore-not-found
 
 echo "==> Aplicando manifestos (kubectl apply -R -f k8s/)"
 kubectl apply -R -f "$ROOT_DIR/k8s/"

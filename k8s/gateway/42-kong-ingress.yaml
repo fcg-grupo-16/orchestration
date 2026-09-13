@@ -9,7 +9,7 @@ metadata:
   labels:
     app.kubernetes.io/part-of: fiap-cloud-games
   annotations:
-    konghq.com/plugins: fcg-correlation-id
+    konghq.com/plugins: fcg-rate-limit-publico,fcg-correlation-id
     # NÃO remover o prefixo: o backend espera /api/v1/... inteiro. Com strip-path "true" o
     # users-api receberia "/login" e devolveria 404.
     konghq.com/strip-path: "false"
@@ -47,7 +47,7 @@ metadata:
   labels:
     app.kubernetes.io/part-of: fiap-cloud-games
   annotations:
-    konghq.com/plugins: fcg-correlation-id
+    konghq.com/plugins: fcg-rate-limit-publico,fcg-correlation-id
     konghq.com/strip-path: "false"
     konghq.com/methods: "POST"
 spec:

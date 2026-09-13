@@ -97,6 +97,13 @@ Sobe RabbitMQ, MongoDB e os 4 microsserviços. Portas expostas no host:
 |---|---|---|
 | users-api | http://localhost:8081 | /swagger |
 | catalog-api | http://localhost:8082 | /swagger |
+
+> ⚠️ **O compose NÃO tem o API Gateway, e o contrato observável difere do cluster.** No compose os
+> serviços são acessados direto nas portas acima, sem gateway: `GET /api/v1/jogos` responde **200
+> anônimo** e não há rate limit. No Kubernetes o mesmo endpoint exige **token** (401 sem ele) e tem
+> limite por IP. É decisão deliberada (decisão 3 do épico #24 — manter um `kong.yml` paralelo
+> duplicaria a configuração do gateway), mas significa que **um cliente escrito contra o compose
+> pode quebrar no cluster**. Ao desenvolver contra o compose, trate o token como obrigatório.
 | payments-api | http://localhost:8083 | (worker) |
 | notifications-api | http://localhost:8084 | (worker) |
 | RabbitMQ Management | http://localhost:15672 | guest / guest |
@@ -231,7 +238,7 @@ do cluster.
 | --- | --- |
 | [`gateway/kong-values.yaml`](gateway/kong-values.yaml) | values do chart (DB-less, `ingressClass: kong`, proxy NodePort 30080, admin/manager/portal fechados) |
 | [`k8s/gateway/40-kong-consumer.yaml`](k8s/gateway/40-kong-consumer.yaml) | `KongConsumer` + credencial JWT |
-| [`k8s/gateway/41-kong-plugins.yaml`](k8s/gateway/41-kong-plugins.yaml) | plugins `jwt`, `rate-limiting` (120/min por consumer), `correlation-id` |
+| [`k8s/gateway/41-kong-plugins.yaml`](k8s/gateway/41-kong-plugins.yaml) | plugins `jwt`, `rate-limiting` (120/min protegido e 20/min público, **por IP**), `correlation-id` |
 | [`k8s/gateway/42-kong-ingress.yaml`](k8s/gateway/42-kong-ingress.yaml) | as três rotas (pública, cadastro, protegida) |
 
 > **Por que o `kong-values.yaml` não está em `k8s/gateway/`:** o `deploy-minikube.sh` roda
@@ -264,6 +271,7 @@ GW=http://localhost:8000; H='Host: api.fcg.local'
 | `curl -i -H "$H" $GW/api/v1/usuarios` | **401** (GET exige token) |
 | `curl -i -H "$H" -H "Authorization: Bearer $TOKEN" $GW/health` | **404** — não exposto |
 | 130 requisições em 1 min | aparece **429** após 120 |
+| `./scripts/gateway-test.sh` | a matriz inteira, incluindo o **teste de dois usuários** |
 | `curl -si ... \| grep -i ratelimit` | `RateLimit-Limit: 120`, `RateLimit-Remaining`, `RateLimit-Reset` |
 
 > **macOS + driver docker:** o `minikube ip` não é alcançável direto do host, por isso o
@@ -287,14 +295,35 @@ O plugin gera um `X-Correlation-Id` por requisição, propaga ao upstream e devo
 - Sem TLS no gateway (ambiente de demonstração).
 - `rate-limiting` com `policy: local`: exato com 1 réplica do Kong; com N réplicas o limite
   efetivo seria N × 120. Contador global exigiria `policy: redis`.
+- **O limite é por IP de origem, não por usuário.** `limit_by: consumer` *parece* ser por token,
+  mas não é: todo JWT do `users-api` tem `iss: FiapCloudGames`, o plugin `jwt` resolve o consumer
+  por essa claim, e portanto **todos** os usuários casam com o único `KongConsumer` — o contador
+  viraria global e um usuário derrubaria os outros. Limite real por usuário exigiria um
+  `KongConsumer` por usuário, o que não é declarável para usuários dinâmicos.
+  Verificado com dois pods de IPs distintos: o pod A esgota a cota (120×200 + 429 em seguida) e o
+  pod B, de outro IP, continua recebendo 200 (`gateway-test.sh`, testes 10a/10b).
+- ⚠️ **O IP que conta é o que o Kong enxerga, e o `ForwardedHeaders` dos serviços não muda isso.**
+  `ForwardedHeaders__*` governa o que `users-api`/`catalog-api` veem como `RemoteIpAddress`; o
+  contador do `rate-limiting` usa a visão do **Kong**, que só confia em `X-Forwarded-For` se
+  `trusted_ips`/`real_ip_header` forem configurados nele — e **não são**, hoje. Consequência
+  prática: no cluster, pods de IPs diferentes têm cotas independentes; atrás de um NAT ou de um
+  load balancer não configurado, todos os clientes compartilhariam a cota do IP visto pelo Kong.
+  Via `kubectl port-forward`, todo o tráfego chega com o mesmo IP — então não use port-forward para
+  avaliar isolamento.
 - A credencial JWT é um `Secret` com o valor **em claro** — de demonstração, como já ocorre no
   `docker-compose.yml`. Migrar para SealedSecret é follow-up.
 
 Remover:
 
 ```bash
-./scripts/undeploy-minikube.sh   # ou: kubectl delete -R -f k8s/
+./scripts/undeploy-minikube.sh
 ```
+
+> O script remove os manifestos **e** o gateway (release Helm, namespace `kong` e os CRDs
+> `*.konghq.com`), nessa ordem — os CRDs têm de sair **depois** dos `KongPlugin`/`KongConsumer`,
+> senão o delete falha com `no matches for kind KongPlugin`. Um `kubectl delete -R -f k8s/` avulso
+> **não** desinstala o Kong: deixaria o release, os CRDs, o webhook de admissão e a NodePort 30080
+> para trás.
 
 > O `PersistentVolumeClaim` gerado pelo `volumeClaimTemplates` **não** é removido por
 > `kubectl delete -R -f k8s/` — os dados ficam para trás de propósito. Para zerar de vez
@@ -566,7 +595,7 @@ Todo **push na `main`** e **todo pull request** dispara o workflow
 | Step | Comando | O que pega |
 |---|---|---|
 | docker-compose | `docker compose -f docker-compose.yml config -q` | sintaxe/estrutura do compose |
-| kubeconform | `kubeconform -strict -ignore-missing-schemas k8s/` | schema rigoroso dos manifestos (offline) |
+| kubeconform | `kubeconform -strict -ignore-missing-schemas k8s/` | schema rigoroso dos manifestos (offline) — **mas ver a ressalva abaixo sobre os CRDs do Kong** |
 | yamllint | `yamllint -d relaxed …` | estilo de YAML (**não-bloqueante** por enquanto) |
 
 > **Por que kubeconform e não `kubectl --dry-run=client`?** Apesar do nome, o dry-run
@@ -581,6 +610,13 @@ Todo **push na `main`** e **todo pull request** dispara o workflow
 > roda em versão **pinada** (nunca `latest`) e o `-ignore-missing-schemas` evita
 > falso-negativo em CRDs sem schema conhecido — é o caso do `SealedSecret`
 > (`k8s/05-sealed-secrets.yaml`), que o kubeconform **pula** em vez de reprovar.
+>
+> ⚠️ **O mesmo vale para os CRDs do Kong, e a consequência é maior.** `KongPlugin` e
+> `KongConsumer` (`k8s/gateway/`) são **pulados**: dos 46 recursos, 10 são skipped e só o Secret e
+> os 3 Ingresses de `k8s/gateway/` chegam a ser validados. Um campo inexistente ou um typo em
+> `claims_to_verify` passa **verde no CI** — e o modo de falha é traiçoeiro: o Kong rejeita o
+> plugin, o gateway devolve 401 sem token (parece funcionar) e devolve 401 **também com token
+> válido**. A validação real do gateway é o `scripts/gateway-test.sh`, contra um cluster.
 
 Para reproduzir o CI localmente:
 

@@ -3,7 +3,12 @@ name: CI
 # Valida a orquestração da plataforma a cada PR e push na main, SEM subir cluster:
 #   1) docker-compose  -> parse/validação (sem subir nada)
 #   2) manifestos k8s  -> validação de schema rigorosa OFFLINE (kubeconform)
-#   3) YAML lint       -> estilo (não-bloqueante por enquanto)
+#   3) scripts shell   -> `bash -n` (parse, sem executar)
+#   4) YAML lint       -> estilo (não-bloqueante por enquanto)
+#
+# LACUNA CONHECIDA: o kubeconform PULA os CRDs do Kong (KongPlugin/KongConsumer) por não
+# ter schema conhecido — um campo inexistente num plugin passa verde aqui. A validação real
+# do gateway é comportamental, contra um cluster: scripts/gateway-test.sh.
 # Rede de segurança para mudanças de infra: pega YAML quebrado ANTES do merge.
 #
 # Nota: NÃO usamos `kubectl apply --dry-run=client` aqui. Apesar do nome, o dry-run
@@ -61,10 +66,22 @@ jobs:
       - name: Validar schema dos manifestos k8s (kubeconform)
         run: kubeconform -strict -summary -ignore-missing-schemas -verbose k8s/
 
-      # 3) yamllint de estilo — NÃO-bloqueante por enquanto (continue-on-error).
+      # 3) Sintaxe dos scripts de shell. A #26 acrescentou `helm upgrade` ao
+      #    deploy-minikube.sh, reescreveu o undeploy-minikube.sh e criou o gateway-test.sh —
+      #    e até aqui o CI não validava shell nenhum. Um erro de sintaxe passaria verde e só
+      #    apareceria na hora do deploy, no cluster.
+      #    `bash -n` só faz parse (não executa nada), então é seguro no runner.
+      - name: Validar sintaxe dos scripts
+        run: |
+          for f in scripts/*.sh; do
+            echo "  bash -n $f"
+            bash -n "$f"
+          done
+
+      # 4) yamllint de estilo — NÃO-bloqueante por enquanto (continue-on-error).
       #    Quando o time alinhar as regras, troque para bloqueante removendo esta flag.
       - name: yamllint (não-bloqueante)
         continue-on-error: true
         run: |
           pipx install yamllint || pip install yamllint
-          yamllint -d relaxed k8s/ docker-compose.yml
+          yamllint -d relaxed k8s/ gateway/ docker-compose.yml

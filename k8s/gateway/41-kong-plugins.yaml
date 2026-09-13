@@ -25,14 +25,35 @@ config:
   # Não exigir JWT no preflight CORS (OPTIONS): senão o browser nem consegue perguntar.
   run_on_preflight: false
 ---
-# RATE LIMITING na borda.
-# `limit_by: consumer` usa o consumer resolvido pelo plugin jwt, ou seja o limite é POR TOKEN e
-# não por IP — importante porque atrás de NAT muitos clientes compartilham o mesmo IP.
+# RATE LIMITING na borda, por IP do cliente.
 #
-# `policy: local` = contadores na memória de cada réplica do Kong. Com 1 réplica (nosso caso) é
-# exato; com N réplicas o limite efetivo seria N × minute. Contador global exigiria
-# `policy: redis` apontando para redis.fcg.svc.cluster.local:6379 — anotado como melhoria na
-# issue, fora do escopo aqui.
+# ⚠️ NÃO use `limit_by: consumer` aqui. Uma versão anterior usava, com o comentário de que "o
+# limite é POR TOKEN". Isso é FALSO na nossa topologia e foi medido no cluster:
+#
+#   O plugin jwt resolve o consumer pela claim `iss`, e TODO token emitido pelo users-api tem
+#   `iss: FiapCloudGames`. Logo todos os usuários casam com o ÚNICO KongConsumer que existe, e
+#   `limit_by: consumer` colapsa num contador GLOBAL da plataforma. Medição:
+#     token B -> 200 | token A consome 125 req (119×200 + 6×429) | token B de novo -> 429
+#   Um usuário esgota a cota e derruba TODOS os outros pela porta de entrada única. Auto-DoS.
+#
+#   `limit_by: credential` tem o mesmo defeito (a credencial também é única). Limite por usuário
+#   exigiria um KongConsumer por usuário, o que não é declarável para usuários dinâmicos.
+#
+# `limit_by: ip` é o que resta como opção declarável.
+#
+# ⚠️ E o IP que conta é o que o KONG enxerga. Uma versão anterior deste comentário dizia que o
+# `ForwardedHeaders` dos serviços tornava isso "o IP do cliente real" — RACIOCÍNIO ERRADO:
+# `ForwardedHeaders__*` governa o `RemoteIpAddress` visto por users-api/catalog-api, não o
+# contador do Kong. O Kong só confiaria em X-Forwarded-For com `trusted_ips`/`real_ip_header`
+# configurados NELE, o que não é o caso hoje.
+#
+# Consequência prática, medida com dois pods: IPs distintos têm cotas independentes (pod A esgota
+# com 120×200 e o pod B, de outro IP, segue em 200). Atrás de NAT, os clientes compartilham a
+# cota; via `kubectl port-forward` todo o tráfego vira um único IP — por isso o teste de
+# isolamento do gateway-test.sh usa dois pods, e não dois tokens.
+#
+# `policy: local` = contadores na memória de cada réplica. Com 1 réplica (nosso caso) é exato;
+# com N réplicas o limite efetivo seria N × minute. Contador global exigiria `policy: redis`.
 apiVersion: configuration.konghq.com/v1
 kind: KongPlugin
 metadata:
@@ -44,11 +65,34 @@ plugin: rate-limiting
 config:
   minute: 120
   policy: local
-  limit_by: consumer
+  limit_by: ip
   # Devolve os headers RateLimit-* (padrão IETF) para o cliente saber quanto sobrou.
   hide_client_headers: false
   # Falha ABERTA de propósito: se o backend de contagem falhar, não derrube a API.
   # Indisponibilidade do contador não pode virar indisponibilidade do produto.
+  fault_tolerant: true
+---
+# RATE LIMITING das rotas PÚBLICAS — mais restritivo que o das protegidas, de propósito.
+#
+# Antes, `login`, `refresh` e o CADASTRO não tinham limite algum na borda. O cadastro é o único
+# caminho de ESCRITA anônimo da plataforma e o menos protegido: `UsuariosController.Criar` não tem
+# `[EnableRateLimiting]` (ao contrário do login, que tem no serviço). Sem limite, é criação
+# ilimitada de contas — flood no Mongo e um UserCreatedEvent por requisição no RabbitMQ.
+#
+# O desenho anterior estava invertido: tráfego autenticado limitado, anônimo livre.
+apiVersion: configuration.konghq.com/v1
+kind: KongPlugin
+metadata:
+  name: fcg-rate-limit-publico
+  namespace: fcg
+  labels:
+    app.kubernetes.io/part-of: fiap-cloud-games
+plugin: rate-limiting
+config:
+  minute: 20
+  policy: local
+  limit_by: ip
+  hide_client_headers: false
   fault_tolerant: true
 ---
 # CORRELATION ID: o Kong gera um X-Correlation-Id por requisição, propaga para o upstream e

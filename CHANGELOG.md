@@ -5,6 +5,64 @@ Todas as mudanças relevantes deste repositório de orquestração são document
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/)
 e o versionamento adere a [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [0.14.0] - 2026-09-13
+
+### Adicionado
+- **API Gateway (Kong Ingress Controller) como porta de entrada única**, em modo DB-less: host
+  único `api.fcg.local`, **validação de JWT na borda** (401 sem token, antes de a requisição sair
+  do namespace `kong`), rate limit e correlation-id. Configuração 100% versionada:
+  `gateway/kong-values.yaml` (values do chart, pinado em 3.4.1) e `k8s/gateway/` com
+  `KongConsumer` + credencial, os plugins e as três rotas. (#26)
+- **`scripts/gateway-test.sh`**: executa a matriz de aceite do gateway contra o cluster, incluindo
+  o teste de **dois tokens** que distingue rate limit por IP de bucket global. (#26)
+- `ForwardedHeaders__*` no ConfigMap de `k8s/20-users-api.yaml`. O `users-api#21` as adicionou no
+  ConfigMap do próprio repo, que **não** é aplicado pelo `deploy-minikube.sh` — sem esta cópia a
+  feature nascia inerte no cluster e o rate limiter de login viraria bucket global. (#26)
+
+### Modificado
+- **`GET /api/v1/jogos` passa a exigir token quando acessado pelo gateway**, embora siga
+  `[AllowAnonymous]` no serviço. Evita rota ambígua por método no mesmo path e torna a
+  demonstração inequívoca. Acesso interno (pod-a-pod, Prometheus, testes) não muda. (#26)
+- `scripts/deploy-minikube.sh`: instala o Kong por Helm **antes** do `kubectl apply` (os CRDs são
+  pré-requisito dos manifestos de `k8s/gateway/`), remove o `fcg-ingress` legado e passou a exigir
+  `helm`, com guard de pré-requisito. (#26)
+- `scripts/undeploy-minikube.sh`: passou a desinstalar o gateway (release, namespace e CRDs), na
+  ordem correta — os CRDs saem depois dos `KongPlugin`/`KongConsumer`. (#26)
+
+### Removido
+- **`k8s/30-ingress.yaml` (Ingress NGINX)** e os hosts `users.fcg.local` / `catalog.fcg.local`,
+  substituídos pelo gateway. O `deploy-minikube.sh` apaga o objeto remanescente em clusters que já
+  rodaram a versão anterior — `kubectl apply` não remove manifesto que saiu do diretório. (#26)
+
+### Notas de implementação
+- **A credencial JWT precisa do label `konghq.com/credential`.** O campo `kongCredType` sozinho é a
+  convenção antiga, e o webhook de admissão do KIC 3.x recusa o `KongConsumer`. O modo de falha
+  engana: plugins e Ingress entram, o gateway devolve 401 sem token (parece funcionar) e devolve
+  401 **também com token válido**, por não haver credencial para casar com a claim `iss`.
+- **`limit_by: consumer` NÃO limita por usuário nesta topologia.** Todo token emitido pelo
+  `users-api` tem `iss: FiapCloudGames`, e o plugin `jwt` resolve o consumer por essa claim — logo
+  todos os usuários casam com o único `KongConsumer` e o contador é **global** — um usuário
+  derrubaria todos pela porta única. O rate limit usa `limit_by: ip`, verificado com dois pods de
+  IPs distintos: o pod A esgota a cota (120×200, depois 429) e o pod B, de outro IP, segue em 200.
+  **O IP que conta é o que o Kong enxerga**, e o `ForwardedHeaders__*` dos serviços não influencia
+  isso: ele governa o `RemoteIpAddress` visto por `users-api`/`catalog-api`, enquanto o Kong só
+  confiaria em `X-Forwarded-For` com `trusted_ips`/`real_ip_header` configurados nele — o que não é
+  o caso. Atrás de NAT, os clientes compartilham a cota; via `port-forward`, todo o tráfego vira um
+  único IP (por isso o teste de isolamento usa dois pods, não dois tokens).
+- **A Admin API do Kong fica desabilitada (default do chart).** Habilitá-la, mesmo como
+  `ClusterIP`, expõe `GET /consumers/.../jwt` — que devolve a chave HS256 **em claro** — a qualquer
+  pod do cluster; com ela se forja um token de admin, e a chave é a mesma nos três validadores.
+  DB-less também não é read-only: `POST /config` substitui a configuração inteira.
+- **Rotas públicas têm limite mais restritivo (20/min) que as protegidas (120/min).** O cadastro é o
+  único caminho de escrita anônimo da plataforma e não tem `[EnableRateLimiting]` no serviço —
+  sem limite na borda, seria criação ilimitada de contas com um `UserCreatedEvent` por requisição.
+- **`gateway/kong-values.yaml` fica fora de `k8s/`** porque `kubectl apply -R -f k8s/` aplicaria o
+  arquivo, e um values de Helm não tem `apiVersion`/`kind` — o apply falharia inteiro. Mesma razão
+  que levou `observability/fcg-overview.json` a viver fora de `k8s/` na 0.13.0.
+- **`kubeconform` não valida os CRDs do Kong** (schema desconhecido): `KongPlugin` e
+  `KongConsumer` são pulados, então erro de campo passa verde no CI. A validação real é o
+  `gateway-test.sh` contra um cluster.
+
 ## [0.13.0] - 2026-09-09
 
 ### Adicionado
