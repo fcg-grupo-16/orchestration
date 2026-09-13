@@ -1,0 +1,128 @@
+# ROTAS PÚBLICAS — sem o plugin jwt.
+# São os endpoints por onde o usuário OBTÉM um token. Exigir JWT aqui seria um deadlock.
+# O correlation-id é aplicado porque queremos rastrear o login também.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: fcg-gateway-public
+  namespace: fcg
+  labels:
+    app.kubernetes.io/part-of: fiap-cloud-games
+  annotations:
+    konghq.com/plugins: fcg-rate-limit-publico,fcg-correlation-id
+    # NÃO remover o prefixo: o backend espera /api/v1/... inteiro. Com strip-path "true" o
+    # users-api receberia "/login" e devolveria 404.
+    konghq.com/strip-path: "false"
+spec:
+  ingressClassName: kong
+  rules:
+    - host: api.fcg.local
+      http:
+        paths:
+          # /api/v1/auth/login, /refresh e /logout. O logout exige token, mas quem valida é o
+          # users-api ([Authorize] no controller) — a borda deixa passar de propósito, para não
+          # duplicar a regra de autorização em dois lugares.
+          - path: /api/v1/auth
+            pathType: Prefix
+            backend:
+              service:
+                name: users-api
+                port:
+                  number: 80
+---
+# CADASTRO — mesmo path das rotas protegidas de usuário, separado por MÉTODO.
+# Ingress próprio porque só o POST é público; GET/PUT/DELETE em /api/v1/usuarios exigem token e
+# caem no Ingress protegido abaixo. `pathType: Exact` + restrição de método torna esta rota mais
+# específica que o Prefix protegido, então o Kong a escolhe para POST /api/v1/usuarios.
+#
+# ⚠️ Este é o ponto mais frágil do roteamento. Se GET /api/v1/usuarios sem token devolver 201 em
+# vez de 401, a prioridade de rota não separou por método — a issue #26 traz o fallback
+# documentado (path dedicado + rewrite). Cadastro público é requisito funcional: não pode passar
+# em silêncio.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: fcg-gateway-signup
+  namespace: fcg
+  labels:
+    app.kubernetes.io/part-of: fiap-cloud-games
+  annotations:
+    konghq.com/plugins: fcg-rate-limit-publico,fcg-correlation-id
+    konghq.com/strip-path: "false"
+    konghq.com/methods: "POST"
+spec:
+  ingressClassName: kong
+  rules:
+    - host: api.fcg.local
+      http:
+        paths:
+          - path: /api/v1/usuarios
+            pathType: Exact
+            backend:
+              service:
+                name: users-api
+                port:
+                  number: 80
+---
+# ROTAS PROTEGIDAS — plugin jwt + rate limit + correlation-id.
+#
+# DECISÃO CONSCIENTE: GET /api/v1/jogos é [AllowAnonymous] no catalog-api, mas pela BORDA passa a
+# exigir token. Dois motivos: (a) mesmo path com JWT no POST e sem JWT no GET é fonte clássica de
+# bug de prioridade de rota no Kong; (b) a demo fica inequívoca — sem token 401 do gateway, com
+# token 200. Os [AllowAnonymous] continuam no código, então acesso interno (pod-a-pod, testes de
+# integração, Prometheus) segue funcionando. Documentado no README.
+#
+# payments-api e notifications-function são orientados a eventos: NÃO têm rota aqui.
+# /health* e /metrics também não são expostos — o Prometheus raspa os pods dentro do cluster.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: fcg-gateway-protected
+  namespace: fcg
+  labels:
+    app.kubernetes.io/part-of: fiap-cloud-games
+  annotations:
+    konghq.com/plugins: fcg-jwt,fcg-rate-limit,fcg-correlation-id
+    konghq.com/strip-path: "false"
+spec:
+  ingressClassName: kong
+  rules:
+    - host: api.fcg.local
+      http:
+        paths:
+          - path: /api/v1/usuarios
+            pathType: Prefix
+            backend:
+              service:
+                name: users-api
+                port:
+                  number: 80
+          - path: /api/v1/jogos
+            pathType: Prefix
+            backend:
+              service:
+                name: catalog-api
+                port:
+                  number: 80
+          - path: /api/v1/biblioteca
+            pathType: Prefix
+            backend:
+              service:
+                name: catalog-api
+                port:
+                  number: 80
+          - path: /api/v1/pedidos
+            pathType: Prefix
+            backend:
+              service:
+                name: catalog-api
+                port:
+                  number: 80
+          # Criado em catalog-api#20 (avaliações / NoSQL nativo).
+          - path: /api/v1/avaliacoes
+            pathType: Prefix
+            backend:
+              service:
+                name: catalog-api
+                port:
+                  number: 80

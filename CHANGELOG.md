@@ -5,6 +5,103 @@ Todas as mudanças relevantes deste repositório de orquestração são document
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/)
 e o versionamento adere a [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [0.14.0] - 2026-09-13
+
+### Adicionado
+- **API Gateway (Kong Ingress Controller) como porta de entrada única**, em modo DB-less: host
+  único `api.fcg.local`, **validação de JWT na borda** (401 sem token, antes de a requisição sair
+  do namespace `kong`), rate limit e correlation-id. Configuração 100% versionada:
+  `gateway/kong-values.yaml` (values do chart, pinado em 3.4.1) e `k8s/gateway/` com
+  `KongConsumer` + credencial, os plugins e as três rotas. (#26)
+- **`scripts/gateway-test.sh`**: executa a matriz de aceite do gateway contra o cluster, incluindo
+  o teste de **dois pods** (IPs de origem distintos), que é o único capaz de distinguir isolamento
+  por IP de contador global — dois tokens da mesma origem não distinguem. (#26)
+- `ForwardedHeaders__*` no ConfigMap de `k8s/20-users-api.yaml`. O `users-api#21` as adicionou no
+  ConfigMap do próprio repo, que **não** é aplicado pelo `deploy-minikube.sh` — sem esta cópia a
+  feature nascia inerte no cluster e o rate limiter de login viraria bucket global. (#26)
+
+### Modificado
+- **O plugin `jwt` passou a aceitar token SÓ pelo header `Authorization`** (`uri_param_names: []`,
+  `cookie_names: []`) e a exigir JWT **também no preflight** (`run_on_preflight: true`). Ver as notas
+  de implementação: a versão anterior desta entrega aceitava `?jwt=<token>` e deixava `OPTIONS`
+  anônimo atravessar. (#26)
+- `scripts/undeploy-minikube.sh`: o guard dos CRDs passou a filtrar por **chart** (`kong-*`) em vez
+  de por nome de release (`helm list -f` casa com o nome, então um `kong-dev` escapava), a enumerar
+  os kinds de `configuration.konghq.com` **a partir do cluster** em vez de uma lista fixa (e o
+  delete dos CRDs passou a derivar da mesma enumeração), a contar releases em **qualquer** namespace
+  — excluir o namespace `kong` deixava escapar justamente um `kong-dev` instalado nele —, e a
+  **falhar fechado** nas duas sondas: a de releases Helm e a de CRs — esta última descartava o
+  status do `kubectl` (em pipeline o exit é o do `wc`), então um `get` falhando era lido como
+  "nenhum CR fora de `fcg`". O `helm
+  uninstall` deixou de ser silenciado com `|| true`. (#26)
+- **`GET /api/v1/jogos` passa a exigir token quando acessado pelo gateway**, embora siga
+  `[AllowAnonymous]` no serviço. Evita rota ambígua por método no mesmo path e torna a
+  demonstração inequívoca. Acesso interno (pod-a-pod, Prometheus, testes) não muda. (#26)
+- `scripts/deploy-minikube.sh`: instala o Kong por Helm **antes** do `kubectl apply` (os CRDs são
+  pré-requisito dos manifestos de `k8s/gateway/`), remove o `fcg-ingress` legado e passou a exigir
+  `helm`, com guard de pré-requisito. (#26)
+- `scripts/undeploy-minikube.sh`: passou a desinstalar o gateway (release, namespace e CRDs), na
+  ordem correta — os CRDs saem depois dos `KongPlugin`/`KongConsumer`. (#26)
+
+### Removido
+- **`k8s/30-ingress.yaml` (Ingress NGINX)** e os hosts `users.fcg.local` / `catalog.fcg.local`,
+  substituídos pelo gateway. O `deploy-minikube.sh` apaga o objeto remanescente em clusters que já
+  rodaram a versão anterior — `kubectl apply` não remove manifesto que saiu do diretório. (#26)
+
+### Notas de implementação
+- **Declarar `header_names` no plugin `jwt` não fecha a querystring nem o cookie.** Os três campos
+  são independentes e `uri_param_names` vem com default `["jwt"]`: a primeira versão desta entrega
+  autenticava por `?jwt=<token>` — medido, `?jwt=<válido>` devolvia 200 e `?jwt=<forjado>` devolvia
+  401, provando que a assinatura era validada a partir da URL — e o token inteiro ia para o **access
+  log do Kong em claro**, coletável por qualquer um que leia log de pod. Corrigido com as duas listas
+  vazias (medido depois: `?jwt=<válido>` → 401, header → 200), e a matriz ganhou as asserções
+  5b/5c/5d para a regressão não voltar a passar verde pelo caminho do header. **O vazamento no log
+  não foi eliminado**, só tornado inútil como via de autenticação: um cliente que ainda ponha o token
+  na URL continua fazendo o Kong registrá-lo no access log, e esse token segue válido pelo header.
+  Eliminá-lo exigiria formato de log sem `$request_uri` — decisão de observabilidade, fora do escopo.
+- **`run_on_preflight: false` só faz sentido junto com um plugin `cors`.** Sem cors a exceção não
+  habilitava nada e deixava `OPTIONS` anônimo chegar ao serviço (medido: 405 com `Server: Kestrel` e
+  a requisição registrada no log do `catalog-api`), contradizendo a promessa de que sem token a
+  requisição não sai do namespace `kong`.
+- **`scripts/gateway-test.sh` limpa o resíduo que ele mesmo cria.** São duas coisas distintas, e a
+  primeira versão desta limpeza descreveu errado o que acumulava: o teste de cadastro grava uma
+  **conta** real (cinco já haviam acumulado no `usersdb`), mas **não** cria `refresh_token` — medido,
+  o delta de `refresh_tokens` num cadastro é zero. Quem cria `refresh_token` são os **logins do
+  próprio teste**, e era esse o resíduo que de fato crescia. A limpeza remove a conta criada e os
+  tokens do `admin` gerados **depois do início da execução**, nunca tokens anteriores.
+- **A credencial JWT precisa do label `konghq.com/credential`.** O campo `kongCredType` sozinho é a
+  convenção antiga, e o webhook de admissão do KIC 3.x recusa o `KongConsumer`. O modo de falha
+  engana: plugins e Ingress entram, o gateway devolve 401 sem token (parece funcionar) e devolve
+  401 **também com token válido**, por não haver credencial para casar com a claim `iss`.
+- **`limit_by: consumer` NÃO limita por usuário nesta topologia.** Todo token emitido pelo
+  `users-api` tem `iss: FiapCloudGames`, e o plugin `jwt` resolve o consumer por essa claim — logo
+  todos os usuários casam com o único `KongConsumer` e o contador é **global por construção**.
+  O rate limit passou a usar `limit_by: ip`, que é o menos errado dos declaráveis — mas
+  **o bucket continua global para todo cliente externo, e isso é limitação conhecida, não corrigida**:
+  via `port-forward` (único caminho documentado) o Kong registra `127.0.0.1` para todas as
+  requisições, e via NodePort o `externalTrafficPolicy: Cluster` faz SNAT para o IP do nó. O
+  contador também é compartilhado entre as 5 rotas protegidas (medido: 116→115→114→113→112). São
+  120/min para a plataforma inteira vista de fora. O `ForwardedHeaders__*` dos serviços não muda
+  isso — ele governa o `RemoteIpAddress` lido do `X-Forwarded-For` que o Kong escreve, e esse valor
+  é `127.0.0.1` para todos, então o rate limiter de login do `users-api` também é global.
+- **Requisição não autenticada não consome cota nas rotas protegidas.** O plugin `jwt` (prioridade
+  1005) roda antes do `rate-limiting` (901) e encerra a requisição: o 401 sai sem headers
+  `RateLimit-*`. Flood anônimo com token inválido não é limitado na borda; prioridade de plugin no
+  Kong é fixa por tipo. O caminho anônimo é coberto pelo limite das rotas públicas.
+- **A Admin API do Kong fica desabilitada (default do chart).** Habilitá-la, mesmo como
+  `ClusterIP`, expõe `GET /consumers/.../jwt` — que devolve a chave HS256 **em claro** — a qualquer
+  pod do cluster; com ela se forja um token de admin, e a chave é a mesma nos três validadores.
+  DB-less também não é read-only: `POST /config` substitui a configuração inteira.
+- **Rotas públicas têm limite mais restritivo (20/min) que as protegidas (120/min).** O cadastro é o
+  único caminho de escrita anônimo da plataforma e não tem `[EnableRateLimiting]` no serviço —
+  sem limite na borda, seria criação ilimitada de contas com um `UserCreatedEvent` por requisição.
+- **`gateway/kong-values.yaml` fica fora de `k8s/`** porque `kubectl apply -R -f k8s/` aplicaria o
+  arquivo, e um values de Helm não tem `apiVersion`/`kind` — o apply falharia inteiro. Mesma razão
+  que levou `observability/fcg-overview.json` a viver fora de `k8s/` na 0.13.0.
+- **`kubeconform` não valida os CRDs do Kong** (schema desconhecido): `KongPlugin` e
+  `KongConsumer` são pulados, então erro de campo passa verde no CI. A validação real é o
+  `gateway-test.sh` contra um cluster.
+
 ## [0.13.0] - 2026-09-09
 
 ### Adicionado

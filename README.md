@@ -97,6 +97,13 @@ Sobe RabbitMQ, MongoDB e os 4 microsserviços. Portas expostas no host:
 |---|---|---|
 | users-api | http://localhost:8081 | /swagger |
 | catalog-api | http://localhost:8082 | /swagger |
+
+> ⚠️ **O compose NÃO tem o API Gateway, e o contrato observável difere do cluster.** No compose os
+> serviços são acessados direto nas portas acima, sem gateway: `GET /api/v1/jogos` responde **200
+> anônimo** e não há rate limit. No Kubernetes o mesmo endpoint exige **token** (401 sem ele) e tem
+> limite por IP. É decisão deliberada (decisão 3 do épico #24 — manter um `kong.yml` paralelo
+> duplicaria a configuração do gateway), mas significa que **um cliente escrito contra o compose
+> pode quebrar no cluster**. Ao desenvolver contra o compose, trate o token como obrigatório.
 | payments-api | http://localhost:8083 | (worker) |
 | notifications-api | http://localhost:8084 | (worker) |
 | RabbitMQ Management | http://localhost:15672 | guest / guest |
@@ -189,42 +196,165 @@ kubectl -n fcg port-forward svc/rabbitmq 15672:15672   # Management UI
 Comunicação interna no cluster usa os nomes de Service (ex.: `http://catalog-api:80`,
 `rabbitmq:5672`, `mongodb:27017`).
 
-### Acesso externo via Ingress
+### Acesso externo: API Gateway (Kong) — porta de entrada única
 
-Os serviços HTTP voltados ao usuário (`users-api`, `catalog-api`) são expostos por um **Ingress**
-([`k8s/30-ingress.yaml`](k8s/30-ingress.yaml)), evitando o `port-forward` manual. `payments-api` e
-`notifications-api` são orientados a eventos e **não** têm entrada HTTP externa.
+Todo o tráfego externo entra pelo **Kong Ingress Controller** em modo **DB-less**, com um host
+único `api.fcg.local`. O gateway **valida o JWT na borda**: sem token válido a requisição recebe
+401 e **não sai do namespace `kong`**. Os serviços continuam validando por conta própria — a borda
+antecipa a rejeição, não substitui a autorização do serviço.
 
-Pré-requisito — o **NGINX Ingress Controller** (o `deploy-minikube.sh` já habilita):
+O Ingress NGINX anterior (dois hosts, sem validação de token) foi **removido**.
 
-```bash
-minikube addons enable ingress
-kubectl -n ingress-nginx rollout status deploy/ingress-nginx-controller
+```
+                        ┌──────────────────────────────────────────┐
+   cliente ──────────►  │  Kong (namespace kong) — api.fcg.local   │
+                        └──────┬───────────────────────────┬───────┘
+                     PÚBLICAS │                           │ PROTEGIDAS (jwt + rate-limit)
+                              ▼                           ▼
+   /api/v1/auth/**       → users-api:80     GET/PUT/DELETE /api/v1/usuarios/** → users-api:80
+   POST /api/v1/usuarios → users-api:80     /api/v1/jogos/**                   → catalog-api:80
+                                            /api/v1/biblioteca/**              → catalog-api:80
+                                            /api/v1/pedidos/**                 → catalog-api:80
+                                            /api/v1/avaliacoes/**              → catalog-api:80
 ```
 
-Mapeie os hosts para o IP do Ingress e teste:
+**Público sem token:** `login`, `refresh` e o **cadastro** (`POST /api/v1/usuarios`) — são como o
+usuário *obtém* um token; exigir token aqui seria um deadlock. O cadastro tem rota própria
+(`pathType: Exact` + `konghq.com/methods: POST`), então `GET /api/v1/usuarios` sem token dá 401.
+
+⚠️ **O prefixo `/api/v1/auth/` NÃO é restrito por método**, ao contrário do cadastro: qualquer verbo e
+qualquer subpath sob ele chegam ao `users-api` sem token (medido: `PUT /api/v1/auth/login` → 405 do
+Kestrel, `GET /api/v1/auth/qualquercoisa` → 404 do Kestrel). A superfície ali é o `AuthController`
+inteiro. É o desenho pretendido e não um bypass — rota pública tem de ser anônima —, mas a frase
+"sem token a requisição não sai do namespace `kong`" vale **só para as 5 rotas protegidas**.
+
+⚠️ **Cliente de browser cross-origin não funciona em rota nenhuma da plataforma.** Não há plugin
+`cors` no gateway e o plugin `jwt` exige token também no preflight, então `OPTIONS` numa rota
+protegida devolve 401 — e `OPTIONS /api/v1/usuarios` também, porque a rota de cadastro é POST-only e
+o preflight acaba casando com o Ingress protegido. Antes o mesmo preflight chegava ao Kestrel e
+voltava 405 sem header de CORS nenhum, ou seja, estava quebrado dos dois lados. Habilitar CORS de
+forma correta é trabalho de uma issue própria.
+
+**Fora do gateway de propósito:** `payments-api` e `notifications-function` são orientados a
+eventos e não têm rota. `/health*` e `/metrics` também não — o Prometheus raspa os pods **dentro**
+do cluster.
+
+> ⚠️ **`GET /api/v1/jogos` é `[AllowAnonymous]` no `catalog-api`, mas a BORDA exige token.**
+> Decisão consciente: evita rota ambígua por método no mesmo path (fonte clássica de bug de
+> prioridade no Kong) e deixa a demonstração inequívoca — sem token 401, com token 200. Os
+> `[AllowAnonymous]` continuam no código, então acesso interno (pod-a-pod, Prometheus, testes de
+> integração) não muda.
+
+#### Configuração versionada
+
+| Arquivo | Papel |
+| --- | --- |
+| [`gateway/kong-values.yaml`](gateway/kong-values.yaml) | values do chart (DB-less, `ingressClass: kong`, proxy NodePort 30080, admin/manager/portal fechados) |
+| [`k8s/gateway/40-kong-consumer.yaml`](k8s/gateway/40-kong-consumer.yaml) | `KongConsumer` + credencial JWT |
+| [`k8s/gateway/41-kong-plugins.yaml`](k8s/gateway/41-kong-plugins.yaml) | plugins `jwt`, `rate-limiting` (120/min protegido e 20/min público — ver a limitação abaixo), `correlation-id` |
+| [`k8s/gateway/42-kong-ingress.yaml`](k8s/gateway/42-kong-ingress.yaml) | as três rotas (pública, cadastro, protegida) |
+
+> **Por que o `kong-values.yaml` não está em `k8s/gateway/`:** o `deploy-minikube.sh` roda
+> `kubectl apply -R -f k8s/`, e um values de Helm não tem `apiVersion`/`kind` — o apply falharia
+> **inteiro**. Artefato que não é manifesto vive fora de `k8s/`.
+
+A instalação é por **Helm** (pré-requisito novo), com a versão do chart **pinada**; o
+`deploy-minikube.sh` faz isso automaticamente, **antes** do `kubectl apply`, porque os CRDs
+`KongPlugin`/`KongConsumer` são pré-requisito dos manifestos:
 
 ```bash
-echo "$(minikube ip) users.fcg.local catalog.fcg.local" | sudo tee -a /etc/hosts
-
-curl http://users.fcg.local/health              # 200 (users-api usa /health)
-curl http://catalog.fcg.local/api/v1/jogos      # 200 (lista de jogos)
+brew install helm                       # pré-requisito
+./scripts/deploy-minikube.sh            # instala o Kong (chart 3.4.1) e aplica tudo
 ```
 
-> **macOS + driver docker:** o `minikube ip` (rede interna do Docker) **não** é alcançável direto
-> do host. Rode `minikube tunnel` em outro terminal (expõe o Ingress em `127.0.0.1`) e aponte os
-> hosts para `127.0.0.1` no `/etc/hosts`. Alternativa sem `/etc/hosts`: port-forward do controller —
-> `kubectl -n ingress-nginx port-forward svc/ingress-nginx-controller 8080:80` e então
-> `curl -H 'Host: catalog.fcg.local' http://localhost:8080/api/v1/jogos`.
+#### Acessar e testar
 
-O roteamento é por **host**; o path é passado **intacto** ao backend (sem `rewrite-target`), então
-rotas como `/api/v1/jogos` chegam inteiras.
+```bash
+kubectl -n kong port-forward svc/kong-kong-proxy 8000:80
+GW=http://localhost:8000; H='Host: api.fcg.local'
+```
+
+| Comando | Esperado |
+| --- | --- |
+| `curl -i -H "$H" $GW/api/v1/jogos` | **401** com `Server: kong/3.9.3` — é o **Kong**, não o serviço |
+| `curl -i -H "$H" -H 'Authorization: Bearer lixo' $GW/api/v1/jogos` | **401** |
+| `curl -H "$H" -H 'Content-Type: application/json' -d '{"email":"admin@fcg.com","senha":"Admin@123456"}' $GW/api/v1/auth/login` | **200** + token (campo `.token`) |
+| `curl -i -H "$H" -H "Authorization: Bearer $TOKEN" $GW/api/v1/jogos` | **200** |
+| `curl -i -H "$H" "$GW/api/v1/jogos?jwt=$TOKEN"` | **401** — token **não** é aceito pela querystring |
+| `curl -i -H "$H" -H "Cookie: jwt=$TOKEN" $GW/api/v1/jogos` | **401** — nem por cookie |
+| `curl -i -X OPTIONS -H "$H" $GW/api/v1/jogos` | **401** — o preflight também exige token (não há plugin `cors`) |
+| `curl -i -H "$H" -H 'Content-Type: application/json' --data-binary @signup.json $GW/api/v1/usuarios` | **201** (cadastro público) |
+| `curl -i -H "$H" $GW/api/v1/usuarios` | **401** (GET exige token) |
+| `curl -i -H "$H" -H "Authorization: Bearer $TOKEN" $GW/health` | **404** — não exposto |
+| 130 requisições em 1 min | aparece **429** após 120 — **não** prova isolamento (ver limitação) |
+| `./scripts/gateway-test.sh` | a matriz inteira, incluindo o teste de **dois pods** do rate limit |
+| `curl -si ... \| grep -i ratelimit` | `RateLimit-Limit: 120`, `RateLimit-Remaining`, `RateLimit-Reset` |
+
+> **macOS + driver docker:** o `minikube ip` não é alcançável direto do host, por isso o
+> `port-forward` acima é o caminho recomendado em vez de `/etc/hosts` + `minikube tunnel`.
+
+> ⚠️ **A `IngressClass` default do cluster continua sendo a `nginx`**
+> (`ingressclass.kubernetes.io/is-default-class: true`), com o controller do minikube instalado.
+> Nada da plataforma passa por ele hoje — todos os nossos Ingress declaram
+> `ingressClassName: kong` —, mas **um Ingress futuro que esqueça o `ingressClassName` entra pelo
+> NGINX, sem validação de JWT**, furando a porta de entrada única. Ao adicionar rota nova, declare
+> a classe explicitamente.
+
+#### Correlation-id — o que ele faz e o que não faz
+
+O plugin gera um `X-Correlation-Id` por requisição, propaga ao upstream e devolve ao cliente
+(`echo_downstream`). O `CorrelationIdMiddleware` dos serviços lê o header e o coloca em
+`HttpContext.TraceIdentifier`.
+
+> ⚠️ **O id NÃO entra nos logs dos serviços.** Verificado no cluster: `kubectl logs deploy/users-api`
+> tem zero ocorrências de correlation — o middleware não empurra o valor para o `LogContext` do
+> Serilog. Para rastrear ponta a ponta hoje, use o **TraceId** (`@tr` no log estruturado, mesmo id
+> no Jaeger). Enriquecer o log com o correlation-id é melhoria dos serviços, não do gateway.
+
+#### Limitações conhecidas
+
+- O Deployment do Kong vem do chart **sem `resources`** definidos por nós, ao contrário dos
+  serviços do `fcg`, que têm requests/limits.
+- Sem TLS no gateway (ambiente de demonstração).
+- `rate-limiting` com `policy: local`: exato com 1 réplica do Kong; com N réplicas o limite
+  efetivo seria N × 120. Contador global exigiria `policy: redis`.
+- ⚠️ **O rate limit é, na prática, um bucket GLOBAL para todo cliente externo.** Não é o que o
+  nome `limit_by: ip` sugere, e não foi corrigido — é limitação conhecida. Medido no cluster:
+  via `kubectl port-forward` (o único caminho documentado) o access log do Kong registra
+  `127.0.0.1` para **todas** as requisições; via NodePort 30080 o Service tem
+  `externalTrafficPolicy: Cluster`, então o kube-proxy faz SNAT e todo cliente externo chega com o
+  IP do nó. E o contador é compartilhado entre as 5 rotas protegidas (medido em sequência:
+  `jogos`=116 → `biblioteca`=115 → `pedidos`=114 → `jogos`=113 → `avaliacoes`=112).
+  **São 120/min para a plataforma inteira vista de fora**, e um cliente que esgote a cota faz os
+  outros receberem 429. Passaria a isolar de verdade com um LoadBalancer real preservando o IP de
+  origem (`externalTrafficPolicy: Local`) ou `trusted_ips`/`real_ip_header` configurados **no
+  Kong** — nenhum dos dois existe aqui.
+- Ainda assim `limit_by: ip` é preferível a `consumer`: com `consumer` o colapso é **garantido por
+  construção**, porque todo JWT do `users-api` tem `iss: FiapCloudGames` e o plugin resolve o
+  consumer por essa claim — todos casam com o único `KongConsumer`. Limite real por usuário exigiria
+  um `KongConsumer` por usuário, o que não é declarável para usuários dinâmicos.
+- ⚠️ **O `ForwardedHeaders__*` dos serviços não ajuda nisso.** Ele governa o `RemoteIpAddress` que
+  `users-api`/`catalog-api` leem do `X-Forwarded-For` escrito pelo Kong — e esse valor é
+  `127.0.0.1` para todos. Logo o rate limiter de login do próprio `users-api` também é global hoje.
+- ⚠️ **Requisição não autenticada não consome cota nas rotas protegidas.** O plugin `jwt`
+  (prioridade 1005) roda antes do `rate-limiting` (901) e encerra a requisição: medido, o 401 sai
+  com **0** headers `RateLimit-*` e o 200 com 3. Um flood anônimo com token inválido nas rotas
+  protegidas não é limitado na borda. Prioridade de plugin no Kong é fixa por tipo — não há inversão
+  declarativa. O caminho anônimo é coberto pelo `fcg-rate-limit-publico` nas rotas públicas.
+- A credencial JWT é um `Secret` com o valor **em claro** — de demonstração, como já ocorre no
+  `docker-compose.yml`. Migrar para SealedSecret é follow-up.
 
 Remover:
 
 ```bash
-./scripts/undeploy-minikube.sh   # ou: kubectl delete -R -f k8s/
+./scripts/undeploy-minikube.sh
 ```
+
+> O script remove os manifestos **e** o gateway (release Helm, namespace `kong` e os CRDs
+> `*.konghq.com`), nessa ordem — os CRDs têm de sair **depois** dos `KongPlugin`/`KongConsumer`,
+> senão o delete falha com `no matches for kind KongPlugin`. Um `kubectl delete -R -f k8s/` avulso
+> **não** desinstala o Kong: deixaria o release, os CRDs, o webhook de admissão e a NodePort 30080
+> para trás.
 
 > O `PersistentVolumeClaim` gerado pelo `volumeClaimTemplates` **não** é removido por
 > `kubectl delete -R -f k8s/` — os dados ficam para trás de propósito. Para zerar de vez
@@ -496,7 +626,7 @@ Todo **push na `main`** e **todo pull request** dispara o workflow
 | Step | Comando | O que pega |
 |---|---|---|
 | docker-compose | `docker compose -f docker-compose.yml config -q` | sintaxe/estrutura do compose |
-| kubeconform | `kubeconform -strict -ignore-missing-schemas k8s/` | schema rigoroso dos manifestos (offline) |
+| kubeconform | `kubeconform -strict -summary -ignore-missing-schemas -verbose k8s/` | schema rigoroso dos manifestos (offline) — **mas ver a ressalva abaixo sobre os CRDs do Kong** |
 | yamllint | `yamllint -d relaxed …` | estilo de YAML (**não-bloqueante** por enquanto) |
 
 > **Por que kubeconform e não `kubectl --dry-run=client`?** Apesar do nome, o dry-run
@@ -511,6 +641,13 @@ Todo **push na `main`** e **todo pull request** dispara o workflow
 > roda em versão **pinada** (nunca `latest`) e o `-ignore-missing-schemas` evita
 > falso-negativo em CRDs sem schema conhecido — é o caso do `SealedSecret`
 > (`k8s/05-sealed-secrets.yaml`), que o kubeconform **pula** em vez de reprovar.
+>
+> ⚠️ **O mesmo vale para os CRDs do Kong, e a consequência é maior.** `KongPlugin` e
+> `KongConsumer` (`k8s/gateway/`) são **pulados**: dos 47 recursos, 11 são skipped e só o Secret e
+> os 3 Ingresses de `k8s/gateway/` chegam a ser validados. Um campo inexistente ou um typo em
+> `claims_to_verify` passa **verde no CI** — e o modo de falha é traiçoeiro: o Kong rejeita o
+> plugin, o gateway devolve 401 sem token (parece funcionar) e devolve 401 **também com token
+> válido**. A validação real do gateway é o `scripts/gateway-test.sh`, contra um cluster.
 
 Para reproduzir o CI localmente:
 

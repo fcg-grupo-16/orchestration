@@ -1,0 +1,83 @@
+# Values do chart kong/kong para a plataforma FCG (Fase 3, issue #26).
+#
+# ⚠️ POR QUE ESTE ARQUIVO NÃO ESTÁ EM k8s/gateway/, apesar de a issue pedir isso:
+# o scripts/deploy-minikube.sh roda `kubectl apply -R -f k8s/`, que aplica TUDO recursivamente.
+# Um values de Helm não tem apiVersion/kind, então o apply falharia inteiro — não só neste arquivo.
+# Este projeto já pagou esse preço na #27, quando o dashboard do Grafana (fcg-overview.json) ficou
+# dentro de k8s/ e quebrou o deploy; a solução foi a mesma: artefato que não é manifesto vive fora
+# de k8s/. Os CRDs do Kong (KongPlugin/KongConsumer/Ingress) continuam em k8s/gateway/.
+#
+# Modo DB-LESS: a configuração do gateway vem 100% dos CRDs/Ingress versionados neste repo
+# (declarativo, GitOps-friendly). Não existe banco do Kong nem Admin API mutável para "configurar
+# na mão" e perder tudo no próximo deploy.
+
+ingressController:
+  enabled: true
+  # Só observa recursos com esta IngressClass. O ingress-nginx do minikube continua instalado
+  # (outros projetos da máquina podem usá-lo), mas nenhuma rota nossa passa por ele.
+  ingressClass: kong
+
+env:
+  database: "off"
+
+proxy:
+  # NodePort no minikube: alcançável por `minikube service` ou port-forward. No macOS com driver
+  # docker o IP do minikube não é roteável direto, então o caminho confiável é port-forward.
+  type: NodePort
+  http:
+    enabled: true
+    nodePort: 30080
+  tls:
+    # Ambiente de demo: sem TLS. TLS no gateway está explicitamente fora do escopo da #26.
+    enabled: false
+
+# ⚠️ NÃO habilite a Admin API. O default do chart é `admin.enabled: false`, e é o correto.
+#
+# Uma versão anterior deste arquivo a habilitava com `type: ClusterIP`, na suposição de que
+# "interno = seguro" e de que em DB-less ela seria "read-only". As duas premissas são FALSAS, e
+# foram medidas no cluster:
+#
+#   • ClusterIP é alcançável por QUALQUER pod. De um pod comum do namespace fcg:
+#       GET http://kong-kong-admin.kong.svc.cluster.local:8001/status            -> 200
+#       GET http://kong-kong-admin.kong.svc.cluster.local:8001/consumers/.../jwt
+#         -> {"secret":"FiapCloudGames_Demo_SecretKey_..."}  ← a chave HS256 EM CLARO
+#     Com ela, qualquer pod forja um token com role de admin. E como a chave é a MESMA em
+#     users-api e catalog-api, é bypass total de autenticação na plataforma.
+#   • DB-less não é read-only: `POST /config` substitui a configuração declarativa inteira — é
+#     assim que o próprio KIC empurra config. Um pod pode remover o plugin jwt até o próximo
+#     reconcile.
+#   • Habilitar também abre o listener para fora do loopback, porque o chart só força 127.0.0.1
+#     quando `enabled: false`. Medido com `helm template` no 3.4.1 (que traz
+#     `admin.http.enabled: false` e `admin.tls.enabled: true`):
+#         --set admin.enabled=true -> KONG_ADMIN_LISTEN=0.0.0.0:8444 http2 ssl, [::]:8444 http2 ssl
+#         values deste repo       -> KONG_ADMIN_LISTEN=127.0.0.1:8444 http2 ssl, [::1]:8444 http2 ssl
+#     (o segundo confere com o pod em execução).
+#
+# O KIC fala com o listener interno do pod, então desabilitar não custa nada.
+
+# ⚠️ DESABILITADOS POR SEGURANÇA — os dois vêm `enabled: true` no default do chart.
+#
+# Descoberto na auditoria da Fase 5: sem estas duas linhas o chart cria `kong-kong-manager` como
+# **NodePort** (o chart não fixa a porta: o apiserver a sorteia), ou seja, a GUI de administração
+# do Kong fica acessível de FORA do cluster. Em modo DB-less a GUI não tem utilidade para nós —
+# toda a configuração vem dos CRDs versionados em k8s/gateway/ —, então é superfície de ataque
+# sem nenhuma contrapartida.
+#
+# O `portal` hoje não chega a virar Service porque `enterprise.enabled: false` o inibe. Está
+# desligado aqui de propósito mesmo assim: é exposição LATENTE, que apareceria no dia em que
+# alguém habilitasse o enterprise sem reler este arquivo.
+manager:
+  enabled: false
+
+portal:
+  enabled: false
+
+# ⚠️ O QUE AINDA ESCUTA EM 0.0.0.0 DENTRO DO CLUSTER — registrado para este arquivo não dar a
+# impressão de que a Admin API era a única superfície administrativa:
+#
+#   • `:8100/status` no pod do proxy: 200 de qualquer pod do cluster (devolve `configuration_hash` e
+#     estatísticas de memória). NÃO vaza segredo — `/consumers/.../jwt` nele responde 404.
+#   • Service `kong-kong-metrics`: `:10254/healthz` e `:10255/metrics`, 200 de qualquer pod.
+#
+# Ficam assim de propósito: são status e telemetria, sem credencial e sem mutação, e o Prometheus
+# precisa do segundo. Fechá-los exigiria NetworkPolicy, fora do escopo desta fase.
