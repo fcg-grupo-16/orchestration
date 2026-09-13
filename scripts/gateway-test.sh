@@ -26,6 +26,16 @@ POD_A="rl-a-$$"; POD_B="rl-b-$$"
 cleanup() {
   [ -n "$PF" ] && kill "$PF" 2>/dev/null || true
   kubectl -n fcg delete pod "$POD_A" "$POD_B" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+  # O teste 6 cadastra um usuário REAL. Sem esta limpeza o script deixava resíduo PERMANENTE: uma
+  # conta e um refresh_token por execução (a auditoria encontrou 5 contas gw-* acumuladas no
+  # usersdb), além de um UserCreatedEvent por execução no RabbitMQ.
+  if [ -n "${EMAIL:-}" ]; then
+    kubectl -n fcg exec mongodb-0 -- mongosh --quiet usersdb --eval \
+      "var u=db.usuarios.findOne({Email:'$EMAIL'},{_id:1});
+       if (u) { db.refresh_tokens.deleteMany({\$or:[{UsuarioId:u._id},{UsuarioId:String(u._id)}]});
+                db.usuarios.deleteOne({_id:u._id}); }" >/dev/null 2>&1 \
+      || echo "  AVISO: nao consegui remover o usuario de teste ${EMAIL}" >&2
+  fi
   rm -rf "$TMPD"
 }
 trap cleanup EXIT
@@ -60,6 +70,15 @@ TOKEN=$(curl -s -H "$HOSTH" -H 'Content-Type: application/json' --data-binary @"
 
 check "5. com token -> 200" 200 "$(code -H "Authorization: Bearer $TOKEN" "$GW/api/v1/jogos")"
 
+# REGRESSÃO do blocker da 3ª revisão: `header_names` não fecha as outras duas superfícies do plugin
+# jwt. O default de `uri_param_names` é ["jwt"], e a versão anterior deste gateway autenticava por
+# `?jwt=<token>`, com o token indo em claro para o access log. Sem estas asserções, reintroduzir o
+# default volta a passar verde, porque o caminho do header continua correto.
+check "5b. token pela querystring -> 401" 401 "$(code "$GW/api/v1/jogos?jwt=$TOKEN")"
+check "5c. token em cookie -> 401" 401 "$(code -H "Cookie: jwt=$TOKEN" "$GW/api/v1/jogos")"
+# Sem plugin `cors` no gateway, um OPTIONS anônimo não pode atravessar até o serviço.
+check "5d. OPTIONS anonimo -> 401" 401 "$(code -X OPTIONS "$GW/api/v1/jogos")"
+
 EMAIL="gw-$(date +%s)-$RANDOM@fcg.com"
 printf '{"nome":"Gateway Teste","email":"%s","senha":"Teste@123456"}' "$EMAIL" > "$TMPD/signup.json"
 check "6. cadastro publico (POST) -> 201" 201 \
@@ -70,6 +89,14 @@ check "8. /health nao exposto -> 404" 404 "$(code -H "Authorization: Bearer $TOK
 RL=$(curl -si -H "$HOSTH" -H "Authorization: Bearer $TOKEN" "$GW/api/v1/jogos" | grep -ic ratelimit || true)
 [ "$RL" -gt 0 ] && printf "  OK   %-46s %s headers\n" "9. headers RateLimit-*" "$RL" \
   || { printf "  FALHA %-45s nenhum header RateLimit\n" "9. headers RateLimit-*"; FALHAS=$((FALHAS+1)); }
+
+# O fcg-rate-limit-publico foi criado para fechar o caminho de ESCRITA anônimo, mas nenhuma
+# asserção o exercitava — um typo nele passaria verde no CI (o kubeconform pula CRDs do Kong) E na
+# matriz. Verificação por HEADER de propósito: é barata e não gasta a cota de 20/min que o teste 6
+# precisa para cadastrar.
+RLP=$(curl -si -H "$HOSTH" -H 'Content-Type: application/json' --data-binary @"$TMPD/login.json" \
+  "$GW/api/v1/auth/login" | tr -d '\r' | awk '/^RateLimit-Limit:/{print $2; exit}')
+check "9b. rota publica limitada a 20/min" 20 "${RLP:-vazio}"
 
 # ---- Teste de isolamento do rate limit: determinístico, dois IPs de origem ----
 #

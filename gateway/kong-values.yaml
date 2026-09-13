@@ -54,7 +54,7 @@ proxy:
 # ⚠️ DESABILITADOS POR SEGURANÇA — os dois vêm `enabled: true` no default do chart.
 #
 # Descoberto na auditoria da Fase 5: sem estas duas linhas o chart cria
-# `kong-kong-manager` como **NodePort** (portas 30858/30743), ou seja, a GUI de administração do
+# `kong-kong-manager` como **NodePort** (o chart não fixa a porta: o apiserver a sorteia), ou seja, a GUI de administração do
 # Kong fica acessível de FORA do cluster. Em modo DB-less a GUI não tem utilidade para nós — toda
 # a configuração vem dos CRDs versionados em k8s/gateway/ —, então é superfície de ataque sem
 # nenhuma contrapartida.
@@ -67,3 +67,13 @@ manager:
 
 portal:
   enabled: false
+
+# ⚠️ O QUE AINDA ESCUTA EM 0.0.0.0 DENTRO DO CLUSTER — registrado para este arquivo não dar a
+# impressão de que a Admin API era a única superfície administrativa:
+#
+#   • `:8100/status` no pod do proxy: 200 de qualquer pod do cluster (devolve `configuration_hash` e
+#     estatísticas de memória). NÃO vaza segredo — `/consumers/.../jwt` nele responde 404.
+#   • Service `kong-kong-metrics`: `:10254/healthz` e `:10255/metrics`, 200 de qualquer pod.
+#
+# Ficam assim de propósito: são status e telemetria, sem credencial e sem mutação, e o Prometheus
+# precisa do segundo. Fechá-los exigiria NetworkPolicy, fora do escopo desta fase.

@@ -16,14 +16,38 @@ config:
   # claims listadas aqui.
   claims_to_verify:
     - exp
-  # Superfície mínima: só o header Authorization. O default do plugin também aceita querystring
-  # e cookie, o que permitiria vazar token em log de acesso / histórico de browser.
+  # Superfície mínima: SÓ o header Authorization.
+  #
+  # ⚠️ Os três campos são INDEPENDENTES, e declarar `header_names` NÃO fecha os outros dois. O
+  # default de `uri_param_names` é ["jwt"], então o plugin aceitava token pela QUERYSTRING. Medido:
+  # `?jwt=<válido>` -> 200, e `?jwt=<forjado com chave errada>` -> 401, o que prova que o Kong lia e
+  # validava a assinatura a partir da URL. Consequência: o token inteiro ia para o access log do
+  # gateway (`GET /api/v1/jogos?jwt=eyJ...`), legível por qualquer um com acesso a log de pod, e
+  # reproduzível em histórico de browser, proxy e header Referer.
+  # As duas listas vazias abaixo consertam o que é consertável aqui: o token deixa de AUTENTICAR
+  # pela URL. Medido DEPOIS do conserto: `?jwt=<válido>` -> 401 e header válido -> 200.
+  #
+  # ⚠️ LIMITAÇÃO RESIDUAL — isto NÃO elimina o vazamento no log. Se um cliente ainda puser o token
+  # na URL, o Kong registra a querystring no access log do mesmo jeito (medido depois do conserto:
+  # 2 linhas `GET /api/v1/jogos?jwt=eyJ...`). E o token logado continua VÁLIDO — o gateway só se
+  # recusa a lê-lo dali —, portanto quem ler o log ainda o usa pelo header. Eliminar isso exigiria
+  # formato de log sem `$request_uri` ou desligar o access log do proxy: decisão de observabilidade,
+  # não tomada aqui.
   header_names:
     - Authorization
+  uri_param_names: []
+  cookie_names: []
   # Nossa chave é string UTF-8 crua, não base64.
   secret_is_base64: false
-  # Não exigir JWT no preflight CORS (OPTIONS): senão o browser nem consegue perguntar.
-  run_on_preflight: false
+  # Exigir JWT TAMBÉM no preflight (OPTIONS).
+  #
+  # `run_on_preflight: false` é a recomendação QUANDO existe um plugin `cors` respondendo ao
+  # preflight — e não existe nenhum aqui. Com `false` e sem cors, a exceção não habilitava CORS
+  # nenhum e só abria um caminho ANÔNIMO ao upstream nas 5 rotas protegidas: medido,
+  # `OPTIONS /api/v1/jogos` sem token devolvia 405 com `Server: Kestrel` e a requisição aparecia no
+  # log do catalog-api — contradizendo a afirmação de que sem token nada sai do namespace kong.
+  # Se um dia houver plugin `cors`, reavaliar os dois juntos.
+  run_on_preflight: true
 ---
 # RATE LIMITING na borda — com uma LIMITAÇÃO IMPORTANTE que não é contornável aqui.
 #
@@ -57,9 +81,6 @@ config:
 # com `Authorization: Bearer lixo` nas rotas protegidas não é limitado na borda. Prioridade de
 # plugin no Kong é fixa por tipo — não há como invertê-la declarativamente. O que protege o
 # caminho anônimo é o fcg-rate-limit-publico, aplicado às rotas públicas.
-#
-# `policy: local` = contadores na memória de cada réplica. Com 1 réplica é exato; com N réplicas o
-# limite efetivo seria N × minute.
 #
 # `policy: local` = contadores na memória de cada réplica. Com 1 réplica (nosso caso) é exato;
 # com N réplicas o limite efetivo seria N × minute. Contador global exigiria `policy: redis`.

@@ -33,7 +33,11 @@ fi
 # 30080 — deploy e undeploy ficavam assimétricos.
 if command -v helm >/dev/null 2>&1 && helm -n kong status kong >/dev/null 2>&1; then
   echo "==> Desinstalando o Kong (release Helm)"
-  helm -n kong uninstall kong --wait || true
+  # Sem tratamento, uma falha aqui era engolida e o `delete namespace` seguinte apagava os objetos
+  # de todo jeito, deixando o release ÓRFÃO no storage do Helm sem sinal nenhum.
+  helm -n kong uninstall kong --wait \
+    || { echo "ERRO: 'helm uninstall kong' falhou; o release pode ter ficado órfão no storage do" >&2
+         echo "      Helm. Verifique com 'helm -n kong list' antes de reinstalar." >&2; exit 1; }
 fi
 kubectl delete namespace kong --ignore-not-found
 
@@ -43,8 +47,16 @@ kubectl delete namespace kong --ignore-not-found
 # SF5: antes isto era incondicional. Se houvesse outro release do Kong no cluster, apagar os CRDs
 # levaria em cascata os KongPlugin/KongConsumer dele. Agora só removemos se não houver outro
 # release nem CR do Kong fora do namespace fcg.
-OUTROS_RELEASES=$(helm list -A -f '^kong$' -o json 2>/dev/null | grep -c '"name"' || true)
-CRS_FORA=$(kubectl get kongplugins,kongconsumers -A --no-headers 2>/dev/null | awk '$1!="fcg"' | wc -l | tr -d ' ')
+# SF6: o `-f` do `helm list` filtra pelo NOME do release, não pelo chart. Com '^kong$' um segundo
+# Kong chamado `kong-dev` ou `my-kong` não casava, o guard via 0 e os CRDs cluster-wide eram
+# apagados, levando os CRs daquele release em cascata — exatamente o dano que este bloco previne.
+# Agora o filtro é pelo CHART (kong-*), em qualquer namespace que não seja o nosso.
+OUTROS_RELEASES=$(helm list -A -o json 2>/dev/null \
+  | python3 -c 'import sys,json;print(sum(1 for r in json.load(sys.stdin) if r.get("chart","").startswith("kong-") and r.get("namespace")!="kong"))' 2>/dev/null || echo 0)
+# Todos os kinds do grupo konghq.com, não só dois: um kongclusterplugin ou tcpingress de terceiro
+# também morreria junto com os CRDs.
+CRS_FORA=$(kubectl get kongplugins,kongclusterplugins,kongconsumers,kongingresses,tcpingresses,udpingresses \
+  -A --no-headers 2>/dev/null | awk '$1!="fcg"' | wc -l | tr -d ' ')
 if [ "${OUTROS_RELEASES:-0}" -eq 0 ] && [ "${CRS_FORA:-0}" -eq 0 ]; then
   echo "==> Removendo os CRDs do Kong"
   kubectl get crd -o name 2>/dev/null | grep 'konghq.com$' | xargs -r kubectl delete --ignore-not-found

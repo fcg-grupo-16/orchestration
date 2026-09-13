@@ -267,6 +267,9 @@ GW=http://localhost:8000; H='Host: api.fcg.local'
 | `curl -i -H "$H" -H 'Authorization: Bearer lixo' $GW/api/v1/jogos` | **401** |
 | `curl -H "$H" -H 'Content-Type: application/json' -d '{"email":"admin@fcg.com","senha":"Admin@123456"}' $GW/api/v1/auth/login` | **200** + token (campo `.token`) |
 | `curl -i -H "$H" -H "Authorization: Bearer $TOKEN" $GW/api/v1/jogos` | **200** |
+| `curl -i -H "$H" "$GW/api/v1/jogos?jwt=$TOKEN"` | **401** — token **não** é aceito pela querystring |
+| `curl -i -H "$H" -H "Cookie: jwt=$TOKEN" $GW/api/v1/jogos` | **401** — nem por cookie |
+| `curl -i -X OPTIONS -H "$H" $GW/api/v1/jogos` | **401** — o preflight também exige token (não há plugin `cors`) |
 | `curl -i -H "$H" -H 'Content-Type: application/json' --data-binary @signup.json $GW/api/v1/usuarios` | **201** (cadastro público) |
 | `curl -i -H "$H" $GW/api/v1/usuarios` | **401** (GET exige token) |
 | `curl -i -H "$H" -H "Authorization: Bearer $TOKEN" $GW/health` | **404** — não exposto |
@@ -610,7 +613,7 @@ Todo **push na `main`** e **todo pull request** dispara o workflow
 | Step | Comando | O que pega |
 |---|---|---|
 | docker-compose | `docker compose -f docker-compose.yml config -q` | sintaxe/estrutura do compose |
-| kubeconform | `kubeconform -strict -ignore-missing-schemas k8s/` | schema rigoroso dos manifestos (offline) — **mas ver a ressalva abaixo sobre os CRDs do Kong** |
+| kubeconform | `kubeconform -strict -summary -ignore-missing-schemas -verbose k8s/` | schema rigoroso dos manifestos (offline) — **mas ver a ressalva abaixo sobre os CRDs do Kong** |
 | yamllint | `yamllint -d relaxed …` | estilo de YAML (**não-bloqueante** por enquanto) |
 
 > **Por que kubeconform e não `kubectl --dry-run=client`?** Apesar do nome, o dry-run

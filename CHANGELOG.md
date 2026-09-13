@@ -21,6 +21,14 @@ e o versionamento adere a [Semantic Versioning](https://semver.org/lang/pt-BR/).
   feature nascia inerte no cluster e o rate limiter de login viraria bucket global. (#26)
 
 ### Modificado
+- **O plugin `jwt` passou a aceitar token SÓ pelo header `Authorization`** (`uri_param_names: []`,
+  `cookie_names: []`) e a exigir JWT **também no preflight** (`run_on_preflight: true`). Ver as notas
+  de implementação: a versão anterior desta entrega aceitava `?jwt=<token>` e deixava `OPTIONS`
+  anônimo atravessar. (#26)
+- `scripts/undeploy-minikube.sh`: o guard dos CRDs passou a filtrar por **chart** (`kong-*`) em vez
+  de por nome de release (`helm list -f` casa com o nome, então um `kong-dev` escapava), passou a
+  contar todos os kinds de `konghq.com`, e o `helm uninstall` deixou de ser silenciado com
+  `|| true`. (#26)
 - **`GET /api/v1/jogos` passa a exigir token quando acessado pelo gateway**, embora siga
   `[AllowAnonymous]` no serviço. Evita rota ambígua por método no mesmo path e torna a
   demonstração inequívoca. Acesso interno (pod-a-pod, Prometheus, testes) não muda. (#26)
@@ -36,6 +44,22 @@ e o versionamento adere a [Semantic Versioning](https://semver.org/lang/pt-BR/).
   rodaram a versão anterior — `kubectl apply` não remove manifesto que saiu do diretório. (#26)
 
 ### Notas de implementação
+- **Declarar `header_names` no plugin `jwt` não fecha a querystring nem o cookie.** Os três campos
+  são independentes e `uri_param_names` vem com default `["jwt"]`: a primeira versão desta entrega
+  autenticava por `?jwt=<token>` — medido, `?jwt=<válido>` devolvia 200 e `?jwt=<forjado>` devolvia
+  401, provando que a assinatura era validada a partir da URL — e o token inteiro ia para o **access
+  log do Kong em claro**, coletável por qualquer um que leia log de pod. Corrigido com as duas listas
+  vazias (medido depois: `?jwt=<válido>` → 401, header → 200), e a matriz ganhou as asserções
+  5b/5c/5d para a regressão não voltar a passar verde pelo caminho do header. **O vazamento no log
+  não foi eliminado**, só tornado inútil como via de autenticação: um cliente que ainda ponha o token
+  na URL continua fazendo o Kong registrá-lo no access log, e esse token segue válido pelo header.
+  Eliminá-lo exigiria formato de log sem `$request_uri` — decisão de observabilidade, fora do escopo.
+- **`run_on_preflight: false` só faz sentido junto com um plugin `cors`.** Sem cors a exceção não
+  habilitava nada e deixava `OPTIONS` anônimo chegar ao serviço (medido: 405 com `Server: Kestrel` e
+  a requisição registrada no log do `catalog-api`), contradizendo a promessa de que sem token a
+  requisição não sai do namespace `kong`.
+- **`scripts/gateway-test.sh` apaga o usuário que ele mesmo cria.** O teste de cadastro grava um
+  usuário real; sem limpeza o script acumulava conta e `refresh_token` a cada execução.
 - **A credencial JWT precisa do label `konghq.com/credential`.** O campo `kongCredType` sozinho é a
   convenção antiga, e o webhook de admissão do KIC 3.x recusa o `KongConsumer`. O modo de falha
   engana: plugins e Ingress entram, o gateway devolve 401 sem token (parece funcionar) e devolve
