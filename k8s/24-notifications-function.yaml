@@ -34,6 +34,16 @@ data:
   MongoDbSettings__DatabaseName: "notificationsdb"
 
   # Jaeger: conferido neste cluster — Service `jaeger`, porta 4317 (otlp-grpc).
+  # Consulta de contato no users-api (notifications-function#9). O ServiceAuth__SecretKey vem
+  # CIFRADO no notifications-function-secret e é IDÊNTICO ao do users-api-secret; issuer e audience
+  # são os PRÓPRIOS do canal de serviço, distintos dos de usuário — com isso o token não é aceito
+  # pelo Kong (que casa credencial por `iss`) nem pelo catalog-api.
+  #
+  # A URL é o Service ClusterIP interno: esta chamada NÃO passa pelo gateway.
+  UsersApi__BaseUrl: "http://users-api"
+  ServiceAuth__Issuer: "FiapCloudGames.Servicos"
+  ServiceAuth__Audience: "FiapCloudGames.Servicos"
+
   OTEL_SERVICE_NAME: "notifications-function"
   OTEL_EXPORTER_OTLP_ENDPOINT: "http://jaeger:4317"
   OTEL_EXPORTER_OTLP_PROTOCOL: "grpc"
