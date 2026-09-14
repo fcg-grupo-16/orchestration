@@ -5,6 +5,72 @@ Todas as mudanças relevantes deste repositório de orquestração são document
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/)
 e o versionamento adere a [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [0.20.0] - 2026-09-14
+
+### Adicionado
+- **Redis dedicado e durável para o store de idempotência** (`k8s/12b-infra-redis-idempotencia.yaml`),
+  fechando a #35. `StatefulSet` com `volumeClaimTemplates`, `--appendonly yes`,
+  `appendfsync everysec`, `--maxmemory 64mb` e **`--maxmemory-policy noeviction`**. Decisão e
+  alternativas descartadas no [ADR 0006](docs/adr/0006-redis-dedicado-para-idempotencia.md). (#35)
+- **Detectores da #35 no `verify-fase3.sh`**: existência do StatefulSet **não basta** — o defeito
+  original era um Redis saudável, porém configurado como cache. O script confere a **configuração
+  efetiva** (`maxmemory-policy=noeviction`, `appendonly=yes`), a presença do **PVC** (sem ele o AOF
+  morre com o Pod e o `appendonly yes` vira falsa sensação de segurança) e se o secret da Function
+  aponta para a instância certa. (#35)
+
+### Corrigido
+- **O Redis de cache e o store de idempotência estavam na mesma instância, e as duas configurações
+  se excluíam.** O manifesto justificava a ausência de PVC dizendo que "todo dado aqui é
+  reconstruível a partir do MongoDB" — verdadeiro para cache, **falso** para a chave que impede
+  e-mail duplicado. E o conflito não era teórico: a chave de idempotência é escrita uma vez e lida
+  nunca, então é sempre o dado **mais frio** da instância e a primeira que `allkeys-lru` descarta
+  (medido na issue: **200 chaves viraram 2** sob tráfego normal de cache). Como o store da Function é
+  *fail-closed*, perdê-la significa e-mail duplicado no reprocessamento da dead-letter — que é
+  operação rotineira. (#35)
+- `k8s/12-infra-redis.yaml`: o comentário afirmava que a `notifications-function` usava aquela
+  instância **e**, na mesma frase, que perder o conteúdo era aceitável. As duas coisas não podiam ser
+  verdadeiras ao mesmo tempo. (#35)
+- `scripts/seal-secrets.sh`: a Function ganhou `REDIS_IDEMPOTENCIA_CONN`, separada de `REDIS_CONN`.
+  Antes uma única variável servia os três secrets. Verificado antes de re-selar que os valores no
+  cluster batiam com os defaults do script — inclusive a **paridade tripla do JWT** —, para a
+  regeneração não trocar nada em silêncio. (#35)
+- `scripts/deploy-minikube.sh`: espera o StatefulSet novo com `rollout status statefulset/...`.
+  `deploy/` devolveria `NotFound` e, sob `set -e`, mataria o deploy. (#35)
+- **A tabela de pendências do relatório de entrega listava #38 e #41 como abertas**, e elas foram
+  fechadas na entrega anterior. Atualizada, com uma linha explícita sobre o que já foi resolvido.
+- README: a seção de cache dizia que **uma** instância atendia toda a plataforma e ensinava um
+  `--scan` no Redis de cache que, a partir de agora, **não mostra** as chaves de idempotência.
+
+### Notas
+- **A durabilidade é "praticamente completa", não absoluta.** Com `appendfsync everysec`, um
+  `kill -9` perde no máximo 1 segundo de escritas — na prática, uma duplicata rara. `always` custaria
+  um fsync por comando, o que não se justifica para o volume desta plataforma. Dizer "durável" sem a
+  ressalva seria impreciso.
+- **O `docker-compose.yml` não ganha um segundo Redis**, de propósito: a `notifications-function` não
+  roda no compose (scale-to-zero exige KEDA), então não há consumidor de idempotência ali.
+- O PVC `dados-redis-idempotencia-0` **sobrevive ao `undeploy-minikube.sh`**, como o do MongoDB —
+  é a consequência desejada de usar `volumeClaimTemplates`. Para descartá-lo:
+  `kubectl -n fcg delete pvc dados-redis-idempotencia-0`.
+- ⚠️ **Custo único da virada: a instância nova nasce vazia.** Havia **36** chaves
+  `fcg:notifications:*` na instância antiga e elas não foram transportadas — uma mensagem cuja chave
+  de deduplicação estivesse entre elas geraria e-mail duplicado se reprocessada da dead-letter. A
+  janela fecha sozinha pelo TTL de 7 dias. Não foi escrito script de migração de propósito: copiar
+  chaves de uma instância `allkeys-lru` onde elas podem já ter sido despejadas daria impressão de
+  transporte completo sem poder garanti-lo.
+
+### Verificado
+- **Fiação real**: um cadastro pelo gateway fez a própria Function gravar
+  `fcg:notifications:processed:UserCreatedEvent:6aa81ea0…` em `redis-idempotencia`, com **0**
+  ocorrências no Redis de cache.
+- **Sobrevivência da chave REAL a um restart**: o UID do pod mudou (`126587c5` → `1f2fb7e1`, ou seja,
+  recriação de fato) e a chave continuou lá (`exists=1`), com TTL de 604721 s.
+- **Controle negativo**: um marcador gravado no Redis de **cache** foi de `exists=1` para `exists=0`
+  após o restart daquele pod. É o que torna a prova acima significativa — sem ele, o teste mostraria
+  apenas que o Redis funciona, não que as duas instâncias se comportam de forma oposta.
+- **Detectores mutation-testados**: com `maxmemory-policy` trocada para `allkeys-lru`, o
+  `verify-fase3.sh` acusa `[FALHA]`; restaurada, volta a passar.
+- `verify-fase3.sh` completo: **exit 0**, 24 checagens OK e 2 avisos que não bloqueiam.
+
 ## [0.19.0] - 2026-09-14
 
 ### Corrigido

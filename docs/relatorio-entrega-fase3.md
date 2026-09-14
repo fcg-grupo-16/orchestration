@@ -137,5 +137,14 @@ Registradas como issues, e não omitidas:
 |---|---|
 | [payments-api#19](https://github.com/fcg-grupo-16/payments-api/issues/19) | Traces do fluxo de compra: sem instrumentação aqui, a cadeia se parte no meio |
 | [payments-api#20](https://github.com/fcg-grupo-16/payments-api/issues/20) | `/metrics` em 404 — target do Prometheus permanentemente `down` |
-| [orchestration#35](https://github.com/fcg-grupo-16/orchestration/issues/35) | Redis volátil (sem AOF/RDB) sendo usado como store de idempotência |
-| [orchestration#38](https://github.com/fcg-grupo-16/orchestration/issues/38) / [#41](https://github.com/fcg-grupo-16/orchestration/issues/41) | Probes de liveness com timeout curto causando restarts |
+| [notifications-function#14](https://github.com/fcg-grupo-16/notifications-function/issues/14) | Function sem OpenTelemetry: o trabalho dela não aparece no Jaeger |
+| [notifications-function#9](https://github.com/fcg-grupo-16/notifications-function/issues/9) | Confirmação de compra endereçada ao `UserId`, não a um e-mail |
+
+Já resolvidas durante a entrega, e listadas aqui porque apareciam em versões anteriores deste
+relatório: [orchestration#35](https://github.com/fcg-grupo-16/orchestration/issues/35) (Redis
+volátil usado como store de idempotência — hoje há uma instância dedicada e durável,
+[ADR 0006](adr/0006-redis-dedicado-para-idempotencia.md)),
+[#38](https://github.com/fcg-grupo-16/orchestration/issues/38) e
+[#41](https://github.com/fcg-grupo-16/orchestration/issues/41) (probes que matavam container
+saudável) e [#40](https://github.com/fcg-grupo-16/orchestration/issues/40) (deploy que não
+atualizava as imagens do nó).
