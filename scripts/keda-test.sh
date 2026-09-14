@@ -138,7 +138,7 @@ PODS_ANTES="$(pods_nomes)"
 EMAIL="keda-$(date +%s)-$RANDOM@fcg.com"
 printf '{"nome":"KEDA Teste","email":"%s","senha":"Teste@123456"}' "$EMAIL" > "$TMPD/signup.json"
 COD=$(curl -s -o /dev/null -w '%{http_code}' -H "$HOSTH" -H 'Content-Type: application/json' \
-  --data-binary @"$TMPD/signup.json" "$GW/api/v1/usuarios")
+  --data-binary @"$TMPD/signup.json" "$GW/api/v1/usuarios" || true)
 T0=$(date +%s)
 check "7. cadastro publico -> 201" "201" "$COD"
 

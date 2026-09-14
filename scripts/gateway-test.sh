@@ -117,7 +117,7 @@ case "$SRV" in kong/*) printf "  OK   %-46s %s\n" "3. o 401 vem do Kong" "$SRV";
 
 printf '{"email":"admin@fcg.com","senha":"Admin@123456"}' > "$TMPD/login.json"
 TOKEN=$(curl -s -H "$HOSTH" -H 'Content-Type: application/json' --data-binary @"$TMPD/login.json" \
-  "$GW/api/v1/auth/login" | jq -r '.token // empty')
+  "$GW/api/v1/auth/login" | jq -r '.token // empty' || true)
 [ -n "$TOKEN" ] && printf "  OK   %-46s 200\n" "4. login publico -> token" \
   || { printf "  FALHA %-45s sem token\n" "4. login publico"; FALHAS=$((FALHAS+1)); }
 
@@ -160,7 +160,7 @@ RL=$(curl -si -H "$HOSTH" -H "Authorization: Bearer $TOKEN" "$GW/api/v1/jogos" |
 # (ConflitoDeDadosException) por execução, ainda que a resposta ao cliente seja 409 corretamente.
 printf '{"nome":"Dup","email":"admin@fcg.com","senha":"Teste@123456"}' > "$TMPD/dup.json"
 DUP=$(curl -si -H "$HOSTH" -H 'Content-Type: application/json' --data-binary @"$TMPD/dup.json" \
-  "$GW/api/v1/usuarios" | tr -d '\r')
+  "$GW/api/v1/usuarios" | tr -d '\r' || true)
 RLC=$(printf '%s\n' "$DUP" | awk '/^RateLimit-Limit:/{print $2; exit}')
 DUPST=$(printf '%s\n' "$DUP" | awk '/^HTTP/{print $2; exit}')
 check "9b. cadastro publico limitado a 20/min" 20 "${RLC:-vazio}"
@@ -168,7 +168,7 @@ check "9b. cadastro publico limitado a 20/min" 20 "${RLC:-vazio}"
 # conta que a limpeza NÃO remove (ela só apaga $EMAIL). Hoje o 409 depende do admin semeado.
 check "9b2. cadastro duplicado nao cria conta" 409 "${DUPST:-vazio}"
 RLP=$(curl -si -H "$HOSTH" -H 'Content-Type: application/json' --data-binary @"$TMPD/login.json" \
-  "$GW/api/v1/auth/login" | tr -d '\r' | awk '/^RateLimit-Limit:/{print $2; exit}')
+  "$GW/api/v1/auth/login" | tr -d '\r' | awk '/^RateLimit-Limit:/{print $2; exit}' || true)
 check "9c. login publico limitado a 20/min" 20 "${RLP:-vazio}"
 
 # ---- Teste de isolamento do rate limit: determinístico, dois IPs de origem ----
@@ -218,10 +218,10 @@ for P in "$POD_A" "$POD_B"; do
 done
 
 req() { kubectl -n fcg exec "$1" -- sh -c \
-  "curl -s -o /dev/null -w '%{http_code}' -H 'Host: api.fcg.local' -H \"Authorization: Bearer \$(cat /tmp/tk)\" $URL_INT" 2>/dev/null | tr -d '[:space:]'; }
+  "curl -s -o /dev/null -w '%{http_code}' -H 'Host: api.fcg.local' -H \"Authorization: Bearer \$(cat /tmp/tk)\" $URL_INT" 2>/dev/null | tr -d '[:space:]' || true; }
 
 A_COUNTS=$(kubectl -n fcg exec "$POD_A" -- sh -c \
-  "for i in \$(seq 1 140); do curl -s -o /dev/null -w '%{http_code}\n' -H 'Host: api.fcg.local' -H \"Authorization: Bearer \$(cat /tmp/tk)\" $URL_INT; done | sort | uniq -c" 2>/dev/null)
+  "for i in \$(seq 1 140); do curl -s -o /dev/null -w '%{http_code}\n' -H 'Host: api.fcg.local' -H \"Authorization: Bearer \$(cat /tmp/tk)\" $URL_INT; done | sort | uniq -c" 2>/dev/null || true)
 echo "$A_COUNTS" | sed 's/^/     pod A: /'
 
 A_OK=$(echo "$A_COUNTS" | awk '$2==200{print $1}'); A_OK=${A_OK:-0}
