@@ -1,0 +1,138 @@
+# Redis DEDICADO ao store de idempotência da notifications-function (issue #35).
+#
+# POR QUE UMA SEGUNDA INSTÂNCIA, e não o Redis de cache do 12-infra-redis.yaml:
+#
+# Aquele Redis é cache, e está configurado como tal — `allkeys-lru`, `--save ""`, `--appendonly no`.
+# A justificativa dele ("todo dado aqui é reconstruível a partir do MongoDB") é verdadeira para
+# cache e FALSA para idempotência: a chave que impede o cliente de receber e-mail duplicado não é
+# reconstruível de lugar nenhum.
+#
+# E o conflito não é teórico. A chave de idempotência é ESCRITA UMA VEZ E LIDA NUNCA (a única
+# leitura é a duplicata, que é rara), então ela é sempre o dado MAIS FRIO de uma instância
+# compartilhada com os caches quentes de users-api e catalog-api — exatamente o que `allkeys-lru`
+# escolhe despejar primeiro. Medido na issue #35, em container descartável com as mesmas flags:
+# 200 chaves de idempotência viraram 2 sob tráfego normal de cache (`evicted_keys: 300200`).
+# Um `restart` do Redis também zerava o keyspace inteiro.
+#
+# ⚠️ Database lógico separado (`SELECT 1`) NÃO resolveria: `maxmemory` e a política de evicção são
+# por INSTÂNCIA, não por database. E trocar para `volatile-lru`/`volatile-ttl` PIORA — essas
+# políticas miram justamente as chaves COM TTL, que é o caso das nossas.
+#
+# StatefulSet e não Deployment, seguindo o precedente já estabelecido em 10-infra-mongodb.yaml: o
+# que é durável usa `volumeClaimTemplates`. A diferença prática importa — o PVC de um
+# volumeClaimTemplate é RETIDO pelo Kubernetes quando o StatefulSet é removido, enquanto um PVC
+# declarado à parte em k8s/ seria apagado pelo `kubectl delete -R -f k8s/` do undeploy, levando
+# junto as chaves que este componente existe para preservar.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis-idempotencia
+  namespace: fcg
+  labels:
+    app: redis-idempotencia
+    app.kubernetes.io/part-of: fiap-cloud-games
+spec:
+  serviceName: redis-idempotencia   # casa com o Service abaixo; com 1 réplica não exigimos DNS por-Pod
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis-idempotencia
+  template:
+    metadata:
+      labels:
+        app: redis-idempotencia
+    spec:
+      containers:
+        - name: redis
+          image: redis:7.4.1-alpine
+          imagePullPolicy: IfNotPresent
+          # As flags são o OPOSTO das do Redis de cache, e cada uma tem um porquê:
+          #
+          # `--appendonly yes`     durabilidade: o AOF é reproduzido no start e reconstrói o keyspace.
+          # `--appendfsync everysec` compromisso padrão do Redis. Um kill -9 perde no MÁXIMO 1 segundo
+          #                        de escritas — na prática, uma duplicata rara. `always` daria
+          #                        durabilidade por escrita ao custo de um fsync por comando, o que
+          #                        não se justifica para o volume desta plataforma. A garantia aqui é
+          #                        "praticamente durável", e é honesto dizer isso em vez de "durável".
+          # `--save ""`            RDB desligado: o AOF é o mecanismo único. Manter os dois faria o
+          #                        mesmo dado ser escrito duas vezes, sem ganho.
+          # `--maxmemory-policy noeviction`  NUNCA despejar. Se a memória encher, o Redis passa a
+          #                        RECUSAR escritas com erro OOM — e o store da Function é
+          #                        fail-closed, então a mensagem vai para a dead-letter em vez de
+          #                        gerar e-mail sem garantia de unicidade. Falhar alto é o
+          #                        comportamento correto; despejar em silêncio é o defeito da #35.
+          # `--maxmemory 64mb`     a chave tem ~100 bytes e TTL de 7 dias; 64 MB comportam centenas de
+          #                        milhares delas, muito além do volume desta demonstração.
+          args:
+            - redis-server
+            - --appendonly
+            - "yes"
+            - --appendfsync
+            - everysec
+            - --save
+            - ""
+            - --maxmemory
+            - 64mb
+            - --maxmemory-policy
+            - noeviction
+          ports:
+            - name: redis
+              containerPort: 6379
+          volumeMounts:
+            # `/data` é o `dir` do Redis e o VOLUME declarado pela imagem oficial — conferido no
+            # cluster: `config get dir` devolve /data, e é onde o appendonly.aof é escrito.
+            - name: dados
+              mountPath: /data
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              # 2x o maxmemory, mesmo raciocínio do 12-infra-redis.yaml: o `maxmemory` do Redis
+              # contabiliza o allocator e não o RSS, então fragmentação e buffers de cliente ficam
+              # fora daquela conta e entram na do kernel. Limite igual ao maxmemory faria o container
+              # ser OOMKilled ANTES de o Redis conseguir recusar a escrita.
+              memory: 128Mi
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            # Explícitos, nunca os defaults — ver issue #38: `timeoutSeconds` omitido vale 1 s, e uma
+            # exec probe faz fork+exec a cada ciclo.
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+  volumeClaimTemplates:
+    - metadata:
+        name: dados          # vira o PVC dados-redis-idempotencia-0
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: standard   # StorageClass padrão do minikube (provisionamento dinâmico)
+        resources:
+          requests:
+            storage: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-idempotencia
+  namespace: fcg
+  labels:
+    app: redis-idempotencia
+    app.kubernetes.io/part-of: fiap-cloud-games
+spec:
+  type: ClusterIP
+  selector:
+    app: redis-idempotencia
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: 6379

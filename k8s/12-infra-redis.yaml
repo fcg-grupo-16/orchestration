@@ -1,7 +1,13 @@
 # Redis — camada de cache distribuído da plataforma FCG (Fase 3, issue #25).
 #
 # Consumido por users-api (users-api#20) e catalog-api (catalog-api#21) para cachear consultas
-# onerosas, e pela notifications-function como store de idempotência.
+# onerosas. APENAS CACHE.
+#
+# ⚠️ A notifications-function NÃO usa mais esta instância. O store de idempotência dela mora no
+# k8s/12b-infra-redis-idempotencia.yaml, num Redis próprio e durável (issue #35). O texto anterior
+# aqui dizia que ela usava — e, na mesma frase, que perder o conteúdo é aceitável porque "todo dado
+# aqui é reconstruível a partir do MongoDB". As duas afirmações não podiam ser verdadeiras ao mesmo
+# tempo: a chave que impede e-mail duplicado não é reconstruível de lugar nenhum.
 #
 # Deployment (não StatefulSet) e SEM PersistentVolumeClaim, DE PROPÓSITO: é CACHE. Todo dado aqui é
 # reconstruível a partir do MongoDB, então perder o conteúdo na recriação do Pod é aceitável — e
@@ -10,8 +16,8 @@
 # Coerente com o compose, onde o Redis também sobe com `--save ""` e `--appendonly no`.
 #
 # ISOLAMENTO ENTRE SERVIÇOS É LÓGICO, por prefixo de chave (Redis__InstanceName: fcg:users: /
-# fcg:catalog: / fcg:notifications:). Uma instância, keyspaces distintos — mesma filosofia do
-# database-per-service que aplicamos no Mongo, sem o custo de subir três Redis num ambiente de demo.
+# fcg:catalog:). Uma instância, keyspaces distintos — mesma filosofia do database-per-service que
+# aplicamos no Mongo, sem o custo de subir um Redis por serviço num ambiente de demo.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -24,9 +30,10 @@ spec:
   replicas: 1
   # Recreate, NÃO o RollingUpdate default. Com replicas: 1 o maxSurge de 25% arredonda para 1, então
   # o pod novo subiria ANTES de o velho morrer e o Service balancearia entre DOIS Redis com estados
-  # diferentes por alguns segundos. Para cache puro isso é só um miss; para o store de idempotência
-  # da notifications-function é perda de correção — a chave gravada no pod A não é vista pelo pod B
-  # e o e-mail sai duplicado. Derrubar antes de subir é o comportamento certo para um cache.
+  # diferentes por alguns segundos — para cache isso é só um miss, mas um miss inconsistente e
+  # difícil de diagnosticar. Derrubar antes de subir é o comportamento certo para um cache.
+  # (O mesmo raciocínio, aplicado à idempotência, é o que torna o 12b um StatefulSet de réplica
+  # única: lá a divergência entre dois pods não é um miss, é e-mail duplicado.)
   strategy:
     type: Recreate
   selector:
