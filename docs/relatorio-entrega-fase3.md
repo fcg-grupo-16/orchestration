@@ -170,17 +170,35 @@ minikube delete && minikube start
 
 ## Pendências conhecidas
 
-Registradas como issues, e não omitidas:
+**Não há issue aberta nos seis repositórios.** O que segue não é omissão — é o registro de uma
+limitação conhecida, com o que se sabe e o que não se sabe separados.
 
-| Issue | O quê | Afeta a entrega? |
-|---|---|---|
-| [catalog-api#24](https://github.com/fcg-grupo-16/catalog-api/issues/24) | Um teste de integração falhou de forma intermitente (1 ocorrência); 100 execuções posteriores limpas | **Não.** É intermitência de *teste*, não de aplicação. Nenhum requisito da fase depende dela |
+### Um teste de integração falhou uma vez, e a causa raiz não foi encontrada
 
-Sobre a #24, o que se sabe está medido e registrado na issue: a falha durou 4 s num teste que leva
-11,2 s, e essa janela é dominada pela subida dos containers de teste (MongoDB 4,6–6,4 s, RabbitMQ
-5,3–6,3 s) — ou seja, a falha caiu na infraestrutura de teste, não numa asserção da API. A causa raiz
-segue desconhecida, e o teste foi instrumentado para que a próxima ocorrência se explique sozinha.
-Fechar a issue sem causa raiz seria varrer para baixo do tapete.
+[catalog-api#24](https://github.com/fcg-grupo-16/catalog-api/issues/24) (fechada). Um teste de
+integração do `catalog-api` falhou de forma intermitente **uma vez**. Depois disso, **100 execuções
+completas da suíte, zero ocorrências**.
+
+O que a medição permite afirmar:
+
+| Afirmação | Base |
+|---|---|
+| A taxa real está **abaixo de 3%** | limite superior a 95% de confiança, com 0 eventos em 100 |
+| A estimativa inicial de ~5% está **descartada** | implicaria 0,6% de chance de 100 execuções limpas |
+| A falha caiu na **infraestrutura de teste**, não numa asserção da API | durou 4 s num teste que leva 11,2 s, janela dominada pela subida dos containers (MongoDB 4,6–6,4 s, RabbitMQ 5,3–6,3 s) |
+
+O que **não** se sabe: a causa raiz. Ela permanece desconhecida, e isto está dito de propósito.
+
+Por que a issue foi fechada mesmo assim: o critério que faltava — reproduzir com mensagem e stack —
+depende de um evento com menos de 3% de probabilidade, que 100 tentativas não produziram. Não há
+próximo passo executável. Em vez de manter aberta uma issue que ninguém pode trabalhar, o teste foi
+**instrumentado nos dois caminhos possíveis**: se quebrar numa asserção, registra status, `Location` e
+corpo da resposta; se morrer subindo container, registra qual e após quanto tempo. Ambos verificados
+forçando a falha de propósito. A issue reabre na primeira nova ocorrência, já com a evidência pronta.
+
+**Nada disso afeta a entrega:** é intermitência de *teste*, não de aplicação, e nenhum dos cinco
+requisitos da fase depende desse teste. A suíte passa — 96 testes de unidade e 27 de integração no
+`catalog-api`.
 
 Já resolvidas durante a entrega, e listadas aqui porque apareciam em versões anteriores deste
 relatório: [notifications-function#9](https://github.com/fcg-grupo-16/notifications-function/issues/9)
