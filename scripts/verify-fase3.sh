@@ -117,7 +117,7 @@ case "$IDX" in
 esac
 
 echo "== 5. Cache distribuído (Redis)"
-existe "$NS" deploy redis && ok "Redis" || fail "Deployment redis ausente"
+existe "$NS" deploy redis && ok "Redis (cache)" || fail "Deployment redis ausente"
 CHAVES="$(kubectl -n "$NS" exec deploy/redis -- redis-cli --scan --pattern 'fcg:catalog:*' 2>/dev/null | tr -d '\r' | grep -c . )"
 if [ "${CHAVES:-0}" -gt 0 ]; then
   ok "cache em uso: $CHAVES chave(s) fcg:catalog:*"
@@ -126,7 +126,40 @@ else
   aviso "nenhuma chave fcg:catalog:* — exercite o catálogo (GET /api/v1/jogos) e rode de novo"
 fi
 
-echo "== 6. As imagens do nó são as que acabaram de ser buildadas? (issue #40)"
+echo "== 6. Idempotência (Redis dedicado, issue #35)"
+# Redis de IDEMPOTÊNCIA (issue #35) — instância SEPARADA e durável. Conferir a existência não basta:
+# o defeito original era um Redis que existia e estava saudável, mas configurado como cache
+# (allkeys-lru, sem persistência), despejando em silêncio as chaves que impedem e-mail duplicado.
+# Por isso o detector olha a CONFIGURAÇÃO EFETIVA, consultada do próprio Redis.
+if existe "$NS" statefulset redis-idempotencia; then
+  ok "Redis de idempotência (StatefulSet, durável)"
+  POLITICA="$(kubectl -n "$NS" exec statefulset/redis-idempotencia -- redis-cli config get maxmemory-policy 2>/dev/null | tr -d '\r' | tail -1)"
+  [ "$POLITICA" = "noeviction" ] \
+    && ok "maxmemory-policy=noeviction (não despeja chave de idempotência)" \
+    || fail "maxmemory-policy='$POLITICA' (esperado noeviction — ver #35)"
+  AOF="$(kubectl -n "$NS" exec statefulset/redis-idempotencia -- redis-cli config get appendonly 2>/dev/null | tr -d '\r' | tail -1)"
+  [ "$AOF" = "yes" ] \
+    && ok "appendonly=yes (sobrevive à recriação do Pod)" \
+    || fail "appendonly='$AOF' (esperado yes — sem AOF a chave morre com o Pod)"
+  # O AOF só é durável se estiver em volume persistente: sem PVC, ele morre junto com o Pod e o
+  # `appendonly yes` vira falsa sensação de segurança.
+  kubectl -n "$NS" get pvc dados-redis-idempotencia-0 >/dev/null 2>&1 \
+    && ok "PVC do AOF provisionado" \
+    || fail "PVC dados-redis-idempotencia-0 ausente — o AOF não sobreviveria ao Pod"
+else
+  fail "StatefulSet redis-idempotencia ausente (a idempotência estaria no Redis de cache — ver #35)"
+fi
+
+# A Function tem de apontar para o Redis DEDICADO. Apontar para o de cache reintroduz o defeito sem
+# que nada no deploy acuse.
+CONN="$(kubectl -n "$NS" get secret notifications-function-secret -o jsonpath='{.data.Redis__ConnectionString}' 2>/dev/null | base64 -d 2>/dev/null)"
+case "$CONN" in
+  redis-idempotencia:*) ok "Function aponta para o Redis de idempotência" ;;
+  "")                   aviso "não consegui ler Redis__ConnectionString do secret da Function" ;;
+  *)                    fail "Function aponta para '$CONN' — deveria ser redis-idempotencia:6379 (#35)" ;;
+esac
+
+echo "== 7. As imagens do nó são as que acabaram de ser buildadas? (issue #40)"
 # Um pod Running com imagem OBSOLETA satisfaz todo `kubectl get` e reprova todo requisito de
 # comportamento. A comparação é imageID do pod x Id no daemon do host.
 if command -v docker >/dev/null 2>&1; then

@@ -72,12 +72,19 @@ if { [ -n "$RABBIT_CONNECTION_DO_ENV" ] && [ -z "$RABBIT_CONNECTION_FQDN_DO_ENV"
   echo "       Prefira exportar RABBIT_USER/RABBIT_PASS/RABBIT_HOST, de onde as duas derivam." >&2
 fi
 MONGO_FUNCTION_CONN="${MONGO_FUNCTION_CONN:-mongodb://mongodb:27017/?replicaSet=rs0}"
-# Store de idempotência da Function. Depende do Redis provisionado na issue #25 — o segredo é
-# gerado desde já para o deploy da Function (#29) não precisar de um segundo passe aqui.
-# Cache distribuído. Uma ÚNICA instância de Redis para toda a plataforma; o isolamento entre
-# serviços é LÓGICO, por prefixo de chave (Redis__InstanceName, no ConfigMap de cada serviço).
-# Por isso a connection string é a mesma para todos — inclusive para a notifications-function.
+# Cache distribuído (issue #25). Uma instância para users-api e catalog-api; o isolamento entre
+# eles é LÓGICO, por prefixo de chave (Redis__InstanceName, no ConfigMap de cada serviço).
 REDIS_CONN="${REDIS_CONN:-redis:6379}"
+
+# ⚠️ A notifications-function aponta para OUTRA instância, e a separação é a correção da issue #35.
+# O Redis acima é cache: `allkeys-lru`, sem persistência. A chave de idempotência é escrita uma vez e
+# lida nunca, então é sempre o dado mais frio de uma instância compartilhada — e o LRU a despeja
+# primeiro (medido: 200 chaves viraram 2 sob tráfego normal de cache). O 12b é `noeviction` com AOF
+# em volume persistente.
+#
+# NÃO aponte esta variável para `redis:6379` "para simplificar": isso reintroduz silenciosamente o
+# caminho para e-mail duplicado, e nada no deploy acusaria.
+REDIS_IDEMPOTENCIA_CONN="${REDIS_IDEMPOTENCIA_CONN:-redis-idempotencia:6379}"
 
 command -v kubeseal >/dev/null || { echo "ERRO: kubeseal não encontrado (brew install kubeseal)." >&2; exit 1; }
 command -v kubectl  >/dev/null || { echo "ERRO: kubectl não encontrado." >&2; exit 1; }
@@ -120,7 +127,8 @@ seal() {
   # Fase 3 — notifications-function (serverless). As chaves seguem a convenção de APP SETTINGS do
   # host de Azure Functions, não a de ASP.NET Core dos demais serviços: `RabbitMqConnection` é o
   # nome literal referenciado pelo atributo [RabbitMQTrigger(..., ConnectionStringSetting = ...)].
-  seal notifications-function-secret "notifications-function" "RabbitMqConnection=$RABBIT_CONNECTION" "MongoDbSettings__ConnectionString=$MONGO_FUNCTION_CONN" "Redis__ConnectionString=$REDIS_CONN"
+  # `Redis__ConnectionString` aponta para o Redis DEDICADO de idempotência (#35), não para o de cache.
+  seal notifications-function-secret "notifications-function" "RabbitMqConnection=$RABBIT_CONNECTION" "MongoDbSettings__ConnectionString=$MONGO_FUNCTION_CONN" "Redis__ConnectionString=$REDIS_IDEMPOTENCIA_CONN"
   # Credencial do scaler do KEDA (#29). Chave `host` é o nome que o TriggerAuthentication espera.
   # Selada como as demais: a issue #29 propunha um Secret em TEXTO CLARO versionado, o que seria a
   # única credencial em claro do repositório.

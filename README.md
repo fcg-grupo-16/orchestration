@@ -85,6 +85,7 @@ flowchart TB
 | [0003](docs/adr/0003-serverless-azure-functions-keda.md) | Azure Functions em container com KEDA, e não o plano Consumption |
 | [0004](docs/adr/0004-nosql-avaliacoes.md) | Avaliações em MongoDB com o driver nativo |
 | [0005](docs/adr/0005-cache-redis-invalidacao-por-geracao.md) | Cache em Redis com invalidação por geração de chave |
+| [0006](docs/adr/0006-redis-dedicado-para-idempotencia.md) | Redis dedicado e durável para o store de idempotência |
 
 ## Microsserviços
 
@@ -758,22 +759,27 @@ open http://localhost:3000        # admin/admin -> pasta FCG -> "FCG — Visão 
 
 ## Cache distribuído (Redis)
 
-A plataforma provisiona um **Redis** como camada de cache distribuído (Fase 3). O consumo pelo
-código dos serviços vem nas issues seguintes: `users-api#20` e `catalog-api#21` (cache de consultas
-onerosas) e `notifications-function#3` (store de idempotência). Este repositório entrega a
-infraestrutura e o contrato de configuração.
+A plataforma provisiona **duas** instâncias de Redis, com propósitos opostos — e a separação é
+deliberada ([ADR 0006](docs/adr/0006-redis-dedicado-para-idempotencia.md), issue #35):
 
-| | |
-|---|---|
-| Compose | serviço `redis`, porta `6379` |
-| Kubernetes | [`k8s/12-infra-redis.yaml`](k8s/12-infra-redis.yaml) — `Deployment` + `Service` ClusterIP |
-| Config | `Redis__InstanceName` no ConfigMap (não sensível) · `Redis__ConnectionString` no SealedSecret |
+| | Cache | Idempotência |
+|---|---|---|
+| Manifesto | [`k8s/12-infra-redis.yaml`](k8s/12-infra-redis.yaml) | [`k8s/12b-infra-redis-idempotencia.yaml`](k8s/12b-infra-redis-idempotencia.yaml) |
+| kind | `Deployment` (sem PVC) | **`StatefulSet`** com `volumeClaimTemplates` |
+| Persistência | `--save ""`, `--appendonly no` | **`--appendonly yes`**, `appendfsync everysec` |
+| Memória cheia | `allkeys-lru` (descarta) | **`noeviction`** (recusa a escrita) |
+| Consumidores | `users-api`, `catalog-api` | `notifications-function` |
+| Compose | serviço `redis`, porta `6379` | — (a Function não roda no compose) |
 
-**Isolamento entre serviços é lógico, por prefixo de chave.** Uma instância de Redis atende toda a
-plataforma; cada serviço escreve sob um prefixo próprio, definido em `Redis__InstanceName`:
-`fcg:users:` e `fcg:catalog:` (provisionados aqui) e `fcg:notifications:` (convenção reservada
-para a `notifications-function`, cujo ConfigMap nasce em `notifications-function#5`). Evita subir
-três instâncias num ambiente de demonstração.
+**Por que duas.** O Redis de cache descarta o dado mais frio quando enche, e isso é correto para
+cache. Mas a chave de idempotência é **escrita uma vez e lida nunca** — a única leitura é a
+duplicata, que é rara —, então ela é sempre o dado mais frio da instância e seria a **primeira** a
+ser descartada. Medido: 200 chaves de idempotência viraram 2 sob tráfego normal de cache. Como o
+store da Function é *fail-closed*, perder a chave significa **e-mail duplicado** para o cliente.
+
+**Isolamento entre serviços é lógico, por prefixo de chave.** No Redis de cache, cada serviço
+escreve sob o prefixo do seu `Redis__InstanceName`: `fcg:users:` e `fcg:catalog:`. A Function usa
+`fcg:notifications:` na instância dedicada.
 
 > ⚠️ **Prefixo é organização, não fronteira de segurança.** O Redis roda sem autenticação e sem
 > `NetworkPolicy`, então qualquer pod do namespace consegue ler e escrever o keyspace de qualquer
@@ -782,10 +788,11 @@ três instâncias num ambiente de demonstração.
 > num ambiente de demonstração; em produção exigiria `requirepass`/ACL por serviço e NetworkPolicy
 > de ingress.
 
-**Sem persistência, de propósito.** O Redis sobe com `--save ""` e `--appendonly no`, e no
-Kubernetes é um `Deployment` **sem** `PersistentVolumeClaim` — ao contrário do MongoDB, que é
-`StatefulSet` com volume. Todo dado aqui é reconstruível a partir do Mongo, então perdê-lo na
-recriação do Pod é aceitável e evita carregar um PVC que não agregaria nada.
+**O Redis de CACHE roda sem persistência, de propósito.** Sobe com `--save ""` e `--appendonly no`,
+e no Kubernetes é um `Deployment` **sem** `PersistentVolumeClaim`. Todo dado ali é reconstruível a
+partir do Mongo, então perdê-lo na recriação do Pod é aceitável e evita carregar um PVC que não
+agregaria nada. **O de idempotência é o oposto** — AOF em volume persistente —, porque a chave dele
+não é reconstruível de lugar nenhum.
 
 **Proteção contra OOM.** `--maxmemory 256mb` com `--maxmemory-policy allkeys-lru`: ao atingir o
 teto, o Redis descarta as chaves menos usadas em vez de crescer até estourar. O `limits.memory` do
@@ -794,13 +801,16 @@ a evicção rodar — o `maxmemory` do Redis contabiliza o allocator, não o RSS
 buffers de saída de cliente ficam fora daquela conta e entram na do kernel.
 
 ```bash
-# compose
+# compose (só o cache; a Function não roda aqui)
 docker compose exec redis redis-cli ping
 docker compose exec redis redis-cli --scan --pattern 'fcg:*'
 
-# kubernetes
-kubectl -n fcg exec deploy/redis -- redis-cli ping
+# kubernetes — cache
 kubectl -n fcg exec deploy/redis -- redis-cli --scan --pattern 'fcg:*'
+
+# kubernetes — idempotência (INSTÂNCIA SEPARADA: as chaves não aparecem no comando acima)
+kubectl -n fcg exec statefulset/redis-idempotencia -- redis-cli --scan --pattern 'fcg:notifications:*'
+kubectl -n fcg exec statefulset/redis-idempotencia -- redis-cli config get maxmemory-policy appendonly
 ```
 
 > **Porta 6379 ocupada na sua máquina?** É comum ter outro Redis local. Remapeie **apenas** no
