@@ -3,15 +3,21 @@
 #
 # Por que este script existe: o `kubeconform` do CI PULA os CRs do KEDA (ScaledObject e
 # TriggerAuthentication não têm schema publicado), exatamente como pula os do Kong. Um campo errado
-# no scaler passa verde no pipeline. Pior, o modo de falha ENGANA — e de duas formas MEDIDAS, com
-# resultados OPOSTOS na condição `Ready`:
-#   • `queueName` inexistente  -> Ready=False (TriggerError), com erro no log do operador;
-#   • credencial apontando para secret inexistente -> **Ready=True**, "ScaledObject is defined
-#     correctly and is ready for scaling", HPA criado e NENHUM erro no operador.
-# Ou seja: `Ready=True` NÃO prova que o scaler alcança o broker — e esse segundo caso é justamente a
-# classe do primeiro defeito encontrado nesta issue (credencial com nome curto, irresolvível do
-# namespace `keda`). Nos dois casos o Deployment fica parado em 0 réplica, indistinguível de
-# scale-to-zero saudável. Só a asserção de EXECUÇÃO decide; a de `Ready` é necessária, não suficiente.
+# no scaler passa verde no pipeline. E `Ready` ENGANA — mas não como uma versão anterior deste
+# comentário afirmava. Medido com ScaledObjects efêmeros, em Deployments dedicados:
+#
+#   • credencial -> secret inexistente:  Ready=False (ScaledObjectCheckFailed) desde o início e
+#     estável (t+8s, t+25s, t+60s), SEM HPA criado, e o operador registra erro em loop
+#     ("missing required parameter \"host\" in [triggerMetadata authParams resolvedEnv]").
+#     A asserção 1 PEGA este caso — é a classe do primeiro defeito desta issue (nome curto,
+#     irresolvível do namespace `keda`), e ele também dá Ready=False.
+#   • credencial boa + `queueName` inexistente:  Ready=True (ScaledObjectReady) com HPA criado
+#     em t+6s e t+12s, caindo para Ready=False (TriggerError) a partir de t+18s.
+#
+# Ou seja, o engano real é TEMPORAL: `Ready=True` aparece ANTES do primeiro poll do trigger, então
+# ler `Ready` cedo demais aprova um scaler que não alcança a fila. Nos dois casos o Deployment fica
+# em 0 réplica, indistinguível de scale-to-zero saudável. A asserção de EXECUÇÃO é a que decide; a
+# de `Ready` é necessária e não suficiente.
 #
 # Uso: ./scripts/keda-test.sh   (requer a plataforma implantada: ./scripts/deploy-minikube.sh)
 set -euo pipefail
@@ -52,6 +58,9 @@ cleanup() {
     kubectl -n "$NS" exec mongodb-0 -- mongosh --quiet usersdb --eval \
       "var u=db.usuarios.findOne({Email:'$EMAIL'},{_id:1}); if (u) { db.usuarios.deleteOne({_id:u._id}); }" \
       >/dev/null 2>&1 || echo "  AVISO: nao consegui remover o usuario de teste (${EMAIL})" >&2
+    # Sem espera bounded aqui, ao contrário do gateway-test.sh, e de propósito: a asserção 9 já
+    # esperou o `Executed ... Succeeded`, então quando o cleanup roda o documento JÁ existe. A janela
+    # remanescente é apenas um Ctrl-C logo após o disparo, antes da asserção 9.
     kubectl -n "$NS" exec mongodb-0 -- mongosh --quiet notificationsdb --eval \
       "db.notifications.deleteMany({Recipient:'$EMAIL'});" \
       >/dev/null 2>&1 || echo "  AVISO: nao consegui remover a notificacao de teste (${EMAIL})" >&2
@@ -65,13 +74,23 @@ check() { # nome, esperado, obtido
   else printf "  FALHA %-45s esperado=%s obtido=%s\n" "$1" "$2" "$3"; FALHAS=$((FALHAS+1)); fi
 }
 replicas() { kubectl -n "$NS" get deploy "$DEPLOY" -o jsonpath='{.spec.replicas}' 2>/dev/null; }
+# ⚠️ DUAS contagens, e a diferença é o que separava um teste honesto de um falso positivo.
+# `pods_vivos` filtra Terminating; `pods_totais` NÃO. Um pod em Terminating ainda tem o consumer AMQP
+# atado e drena mensagem — então para "está ocioso?" e para "subiu pod novo?" o que vale é o TOTAL.
+# Medido: com `terminationGracePeriodSeconds=30` (default; o manifesto não declara), a janela em que
+# `pods_vivos` devolvia 0 com um pod vivo chegava a 30s.
 pods_vivos() { kubectl -n "$NS" get pods -l "app=$DEPLOY" --no-headers 2>/dev/null | grep -vc Terminating || true; }
+pods_totais() { kubectl -n "$NS" get pods -l "app=$DEPLOY" --no-headers 2>/dev/null | wc -l | tr -d ' '; }
+pods_nomes()  { kubectl -n "$NS" get pods -l "app=$DEPLOY" -o name 2>/dev/null | tr '\n' ' ' || true; }
 fila() { kubectl -n "$NS" exec deploy/rabbitmq -- rabbitmqctl list_queues name messages 2>/dev/null \
   | awk -v q="$1" '$1==q{print $2}'; }
 
 echo "==> Pré-condições do KEDA"
+# `|| true` obrigatório: atribuição por substituição de comando propaga o status, e sob `set -e` o
+# script morria SEM IMPRIMIR NADA justamente quando o ScaledObject não existe — o caso que esta
+# asserção existe para reportar. O fallback `ausente` era código morto.
 READY=$(kubectl -n "$NS" get scaledobject "$DEPLOY" \
-  -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+  -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)
 check "1. ScaledObject Ready" "True" "${READY:-ausente}"
 # Sem este HPA o KEDA não está de fato no controle da escala.
 HPA=$(kubectl -n "$NS" get hpa "keda-hpa-$DEPLOY" -o name 2>/dev/null | wc -l | tr -d ' ')
@@ -91,22 +110,28 @@ echo "==> Estado OCIOSO (o requisito de otimização de recursos)"
 # Teto = cooldownPeriod (60s) + margem para a virada do HPA.
 echo "     aguardando o estado ocioso (até 150s)"
 for _ in $(seq 1 30); do
-  if [ "$(replicas)" = "0" ] && [ "$(pods_vivos)" -eq 0 ]; then break; fi
+  if [ "$(replicas)" = "0" ] && [ "$(pods_totais)" -eq 0 ]; then break; fi
   sleep 5
 done
 check "4. Deployment em 0 replica" "0" "$(replicas)"
-check "5. nenhum pod da Function" "0" "$(pods_vivos)"
-# `Active` fica `Unknown` por alguns segundos logo apos o ScaledObject ser criado (observado 2x,
-# assentando em <=5s). Sem esta espera, um keda-test.sh disparado imediatamente depois do deploy
-# reprovaria por uma janela transitoria, nao por defeito.
+check "5. nenhum pod da Function" "0" "$(pods_totais)"
+# `Active` fica `Unknown` por alguns segundos logo após o ScaledObject ser criado (observado 2x,
+# assentando em <=5s) — EM SISTEMA ÍNTEGRO. Com o scaler quebrado ele fica `Unknown` indefinidamente,
+# e então este laço queima os 60s inteiros e a asserção reprova: resultado certo, só mais lento.
+# Sem a espera, um keda-test.sh disparado logo depois do deploy reprovaria por janela transitória.
 for _ in $(seq 1 12); do
   ATIVO=$(kubectl -n "$NS" get scaledobject "$DEPLOY" \
-    -o jsonpath='{.status.conditions[?(@.type=="Active")].status}' 2>/dev/null)
+    -o jsonpath='{.status.conditions[?(@.type=="Active")].status}' 2>/dev/null || true)
   [ "$ATIVO" = "Unknown" ] || break
   sleep 5
 done
 check "6. ScaledObject Active=False (fila vazia)" "False" "${ATIVO:-ausente}"
 
+# Pods existentes ANTES do disparo. A asserção 8 tem de exigir um pod DIFERENTE, não "algum pod":
+# um pod do ciclo anterior ainda em Terminating era contado como "o KEDA acordou a Function", e isso
+# foi medido como FALSO POSITIVO — o log do operador não registrava terceiro ciclo de escala, não
+# havia SuccessfulCreate novo, e o ReplicaSet seguia sem pod.
+PODS_ANTES="$(pods_nomes)"
 echo "==> DISPARO: evento real pelo gateway"
 kubectl -n kong port-forward svc/kong-kong-proxy "${GW_PORT}:80" >"$TMPD/pf.log" 2>&1 &
 PF=$!
@@ -123,7 +148,13 @@ echo "==> ESCALA 0 -> 1"
 # neste host arm64, então a partida é mais lenta que a dos demais serviços.
 SUBIU=nao
 for _ in $(seq 1 30); do
-  [ "$(pods_vivos)" -gt 0 ] && { SUBIU=sim; break; }
+  for P in $(pods_nomes); do
+    case " $PODS_ANTES " in
+      *" $P "*) ;;            # pod que já existia antes do disparo: não conta
+      *) SUBIU=sim ;;
+    esac
+  done
+  [ "$SUBIU" = "sim" ] && break
   sleep 5
 done
 check "8. KEDA acordou a Function" "sim" "$SUBIU"

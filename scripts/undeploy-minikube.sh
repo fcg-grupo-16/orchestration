@@ -16,11 +16,21 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 # do Kong ausente (alguém já desinstalou o gateway à mão). Qualquer outro erro aborta.
 echo "==> Removendo os manifestos (namespace fcg + gateway)"
 if ! ERRO=$(kubectl delete -R -f "$ROOT_DIR/k8s/" --ignore-not-found 2>&1); then
-  # ⚠️ `grep -q` sozinho falha ABERTO em saída MISTA: se o delete produzir uma linha
-  # "no matches for kind" E TAMBÉM um erro real (RBAC, admissão, timeout parcial), o grep casa a
-  # primeira e o script engole o resto, imprimindo sucesso com exit 0. Medido em isolamento.
-  # Agora só tolera se NENHUMA linha de erro deixar de casar a frase.
-  if ! echo "$ERRO" | grep -E '^(error|Error)' | grep -qv "no matches for kind"; then
+  # ⚠️ DUAS falhas abertas já corrigidas aqui, ambas medidas em isolamento:
+  #   1) `grep -q` sozinho tolerava saída MISTA — uma linha "no matches for kind" mais um erro real
+  #      (RBAC, admissão) e o script engolia o segundo, imprimindo sucesso com exit 0;
+  #   2) exigir apenas que "nenhuma linha ^error deixe de casar a frase" tolerava o que NÃO tem linha
+  #      começando por error/Error na coluna 0: saída VAZIA, `  Error from server` indentado, e
+  #      "The connection to the server ... was refused". Nesses casos o script imprimia o aviso
+  #      enganoso de "CRDs ausentes" e seguia derrubando a plataforma com exit 0.
+  # Agora exige as duas coisas: a frase tolerável PRESENTE, e nenhuma linha de erro fora dela.
+  TOLERAVEL="no matches for kind"
+  # Formas de erro que o kubectl usa, incluindo indentadas e a de conexão. `E0913 ...` é klog e não
+  # indica falha do delete, por isso fica fora da contagem.
+  LINHAS_ERRO=$(echo "$ERRO" | grep -E '([Ee]rror|unable to recognize|The connection to the server)' \
+                  | grep -vE '^E[0-9]{4} ' || true)
+  FORA=$(printf '%s\n' "$LINHAS_ERRO" | grep -v "$TOLERAVEL" | grep -c . || true)
+  if echo "$ERRO" | grep -q "$TOLERAVEL" && [ "${FORA:-0}" -eq 0 ]; then
     echo "   aviso: CRDs do Kong ou do KEDA ausentes (já removidos à mão) — seguindo"
     echo "$ERRO" | grep -v "no matches for kind" || true
   else

@@ -409,15 +409,22 @@ Ou, de uma vez, a matriz de aceite (**12 asserções**):
 Ela existe pela mesma razão do `gateway-test.sh`: o `kubeconform` do CI **pula** os CRs do KEDA. E o
 modo de falha engana de **duas** formas medidas, com resultados opostos:
 
-| quebra | condição `Ready` | pega pela asserção 1? |
-|---|---|---|
-| `queueName` inexistente | `False` (`TriggerError`), com erro no operador | sim |
-| credencial → secret inexistente | **`True`** ("ready for scaling"), HPA criado, sem erro no log | **não** |
+| quebra | condição `Ready` medida | HPA? | pega pela asserção 1? |
+|---|---|---|---|
+| credencial → secret inexistente | **`False`** (`ScaledObjectCheckFailed`), estável em t+8s/25s/60s | não | **sim** |
+| credencial boa + `queueName` inexistente | **`True`** em t+6s e t+12s, depois `False` (`TriggerError`) em t+18s | **sim** | só depois do 1º poll |
 
-Ou seja: **`Ready=True` não prova que o scaler alcança o broker** — e esse segundo caso é exatamente a
-classe do primeiro defeito desta entrega. Nos dois o Deployment fica em 0 réplica, indistinguível de
-scale-to-zero saudável. A asserção decisiva é a de **execução** (`Executed ... Succeeded`); a de
-`Ready` é necessária, não suficiente. O script limpa o que cria nas três coleções que toca.
+O engano é **temporal**, não de categoria: `Ready=True` aparece **antes do primeiro poll do trigger**,
+então ler `Ready` cedo demais aprova um scaler que não alcança a fila. Credencial irresolvível — a
+classe do primeiro defeito desta entrega — dá `Ready=False` e a asserção 1 **pega**. Nos dois casos o
+Deployment fica em 0 réplica, indistinguível de scale-to-zero saudável, e a asserção decisiva é a de
+**execução** (`Executed ... Succeeded`): a de `Ready` é necessária e não suficiente. O script limpa o
+que cria nas três coleções que toca.
+
+> **Correção registrada:** uma versão anterior desta tabela dizia o oposto — que a credencial quebrada
+> deixava `Ready=True` sem erro no operador. Era falso, e a origem do erro foi eu transcrever a
+> medição de uma revisão **sem reproduzi-la**. Os números acima são de medição própria, com
+> `ScaledObject`s efêmeros em Deployments dedicados.
 
 ### O que foi medido
 
@@ -759,9 +766,10 @@ Todo **push na `main`** e **todo pull request** dispara o workflow
 >
 > - **Kong:** um typo em `claims_to_verify` passa verde, o Kong rejeita o plugin, e o gateway devolve
 >   401 sem token (parece funcionar) e 401 **também com token válido**.
-> - **KEDA:** um campo errado no scaler passa verde, o `ScaledObject` fica `Ready=False` e o
->   Deployment segue parado em **0 réplica** — que de longe é indistinguível de scale-to-zero
->   funcionando. Só que nada acorda quando chega mensagem.
+> - **KEDA:** um campo errado no scaler passa verde no CI, e o Deployment segue parado em **0
+>   réplica** — indistinguível de scale-to-zero funcionando, só que nada acorda quando chega
+>   mensagem. A condição `Ready` **não** basta para distinguir: credencial irresolvível dá
+>   `Ready=False`, mas `queueName` inexistente dá `Ready=True` até o primeiro poll do trigger.
 >
 > A validação real é comportamental, contra um cluster: `scripts/gateway-test.sh` para o gateway e
 > `scripts/keda-test.sh` para o scale-to-zero.

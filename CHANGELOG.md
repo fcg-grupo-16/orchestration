@@ -23,13 +23,14 @@ e o versionamento adere a [Semantic Versioning](https://semver.org/lang/pt-BR/).
   Deployment **sem `replicas`** de propósito: quem controla a contagem é o KEDA. (#29)
 - **`scripts/keda-test.sh`**: matriz de aceite do ciclo 0→1→0 contra o cluster. Existe pela mesma
   razão do `gateway-test.sh`: o `kubeconform` do CI **pula** os CRs do KEDA (sem schema publicado),
-  e o modo de falha engana de **duas** formas medidas, com resultados OPOSTOS: `queueName` inexistente
-  deixa `Ready=False` (`TriggerError`), mas credencial apontando para secret inexistente deixa
-  **`Ready=True`** — "ready for scaling", HPA criado, zero erro no operador. Logo **`Ready=True` não
-  prova que o scaler alcança o broker**, e esse é justamente o caso do primeiro defeito desta entrega.
-  Nos dois o Deployment fica em 0 réplica, indistinguível de scale-to-zero saudável; a asserção
-  decisiva é a de **execução** (`Executed ... Succeeded`). São 12 asserções, e o script limpa o que
-  cria nas três coleções que toca. (#29)
+  e o engano de `Ready` é **temporal**, medido com `ScaledObject`s efêmeros em Deployments dedicados:
+  credencial → secret inexistente dá `Ready=False` (`ScaledObjectCheckFailed`) **estável** e sem HPA,
+  caso que a asserção 1 **pega**; já credencial boa com `queueName` inexistente dá **`Ready=True`** com
+  HPA criado em t+6s e t+12s, caindo para `Ready=False` (`TriggerError`) em t+18s. Ou seja, ler `Ready`
+  **antes do primeiro poll do trigger** aprova um scaler que não alcança a fila. Nos dois casos o
+  Deployment fica em 0 réplica, indistinguível de scale-to-zero saudável, e a asserção decisiva é a de
+  **execução** (`Executed ... Succeeded`). São 12 asserções, e o script limpa o que cria nas três
+  coleções que toca. (#29)
 - Credencial selada `keda-rabbitmq-secret` para o scaler, com **FQDN**. (#29)
 
 ### Modificado
@@ -90,6 +91,17 @@ e o versionamento adere a [Semantic Versioning](https://semver.org/lang/pt-BR/).
   `k8s/24-notifications-function.yaml` não declara `containerPort` nem Service, e o scale-to-zero
   mantém 0 réplica. Não corrigido aqui: expor exigiria Service + pod quente (anulando o
   scale-to-zero) ou ativação por HTTP, além de tratar a `x-functions-key`.
+- **Duas afirmações minhas sobre o próprio teste eram falsas, e a origem do erro importa.** (a) Eu
+  descrevi o modo de falha do scaler com as duas causas **invertidas** — transcrevi a medição de uma
+  revisão adversarial **sem reproduzi-la**, e a reprodução própria mostrou o contrário (ver a nota
+  acima). (b) Eu declarei que o `keda-test.sh` passava 12/12 "na condição que o quebrou"; não passava:
+  o meu re-run tinha um `sleep 75` no meio (para a leitura atrasada do Mongo) e o
+  `terminationGracePeriodSeconds` é **30s**, então o estado já estava genuinamente ocioso e a condição
+  tight nunca foi exercida. O defeito que isso escondia era real: `pods_vivos()` filtrava
+  `Terminating`, de modo que um pod ainda vivo — com consumer AMQP atado, drenando a mensagem —
+  contava como zero, e a asserção 8 reportava "o KEDA acordou a Function" olhando o pod do ciclo
+  anterior. Corrigido com `pods_totais()` na espera de ocioso e exigindo pod de **nome diferente** na
+  asserção 8.
 - **Correções de afirmações desta própria entrega**, encontradas em revisão adversarial e registradas
   por honestidade: (a) "resíduo zero no Mongo" era **falso** — media só `usersdb`, enquanto a Function
   persiste toda notificação em `notificationsdb.notifications`; 14 documentos de teste haviam

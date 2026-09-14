@@ -48,6 +48,11 @@ RABBIT_CONNECTION="${RABBIT_CONNECTION:-amqp://${RABBIT_USER}:${RABBIT_PASS}@${R
 # própria Function) roda dentro de `fcg`. São a MESMA credencial, com escopos de DNS diferentes.
 # Só sufixa o namespace quando o host é um nome CURTO. Com RABBIT_HOST=broker.example.com a
 # concatenação produziria `broker.example.com.fcg.svc.cluster.local`, que não resolve.
+# Par do RABBIT_CONNECTION_DO_ENV acima. A primeira versão do aviso referenciava esta variável sem
+# nunca atribuí-la, então o segundo teste era SEMPRE verdadeiro: avisava quem exportou as DUAS
+# (fez certo) e ficava calado na divergência inversa. Medido em isolamento.
+RABBIT_CONNECTION_FQDN_DO_ENV="${RABBIT_CONNECTION_FQDN+sim}"
+
 case "$RABBIT_HOST" in
   *.*|localhost) RABBIT_HOST_FQDN="$RABBIT_HOST" ;;
   *)             RABBIT_HOST_FQDN="${RABBIT_HOST}.${NS}.svc.cluster.local" ;;
@@ -57,10 +62,14 @@ RABBIT_CONNECTION_FQDN="${RABBIT_CONNECTION_FQDN:-amqp://${RABBIT_USER}:${RABBIT
 # ⚠️ ARMADILHA DE ROTAÇÃO: sobrescrever só uma das duas faz os segredos DIVERGIREM em silêncio, e o
 # scaler do KEDA volta a falhar como no defeito original da #29. O caminho recomendado é sobrescrever
 # RABBIT_USER/RABBIT_PASS/RABBIT_HOST, de onde as duas derivam.
-if [ -n "$RABBIT_CONNECTION_DO_ENV" ] && [ -z "${RABBIT_CONNECTION_FQDN_DO_ENV:-}" ]; then
-  echo "AVISO: RABBIT_CONNECTION veio do ambiente mas RABBIT_CONNECTION_FQDN não." >&2
-  echo "       O segredo do KEDA usará o valor derivado de RABBIT_USER/PASS/HOST e pode divergir." >&2
-  echo "       Prefira exportar RABBIT_USER/RABBIT_PASS/RABBIT_HOST." >&2
+# Avisa quando EXATAMENTE UMA das duas vier do ambiente — a divergência é simétrica, e a versão
+# anterior só olhava um sentido (e, por causa do bug acima, olhava errado).
+if { [ -n "$RABBIT_CONNECTION_DO_ENV" ] && [ -z "$RABBIT_CONNECTION_FQDN_DO_ENV" ]; } \
+   || { [ -z "$RABBIT_CONNECTION_DO_ENV" ] && [ -n "$RABBIT_CONNECTION_FQDN_DO_ENV" ]; }; then
+  echo "AVISO: só UMA das conexões do RabbitMQ veio do ambiente (RABBIT_CONNECTION=${RABBIT_CONNECTION_DO_ENV:-nao}, RABBIT_CONNECTION_FQDN=${RABBIT_CONNECTION_FQDN_DO_ENV:-nao})." >&2
+  echo "       Os dois segredos vão DIVERGIR: o dos serviços e o do scaler do KEDA apontariam para" >&2
+  echo "       credenciais diferentes, reincidindo no defeito original da #29." >&2
+  echo "       Prefira exportar RABBIT_USER/RABBIT_PASS/RABBIT_HOST, de onde as duas derivam." >&2
 fi
 MONGO_FUNCTION_CONN="${MONGO_FUNCTION_CONN:-mongodb://mongodb:27017/?replicaSet=rs0}"
 # Store de idempotência da Function. Depende do Redis provisionado na issue #25 — o segredo é

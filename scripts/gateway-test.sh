@@ -56,16 +56,25 @@ cleanup() {
     # costuma aparecer DEPOIS do fim das assercoes. A primeira versao deste delete rodava antes da
     # escrita e nao apagava nada -- medido, um documento `gw-*` ficou orfao e a contagem "antes x
     # depois" deu igual por coincidencia de tempo, escondendo o vazamento. Por isso a espera bounded.
-    for _ in $(seq 1 18); do
-      NOTIF=$(kubectl -n fcg exec mongodb-0 -- mongosh --quiet notificationsdb --eval \
-        "print(db.notifications.countDocuments({Recipient:'$EMAIL'}))" 2>/dev/null | tr -d '[:space:]')
-      if [ "${NOTIF:-0}" != "0" ]; then break; fi
-      sleep 5
-    done
+    # Só espera se a Function ESTIVER implantada: este script é da #26 e não a exige. Sem esta
+    # guarda, todo cluster sem o ScaledObject pagava o teto inteiro de espera por um documento que
+    # nunca viria.
+    NOTIF=0
+    if kubectl -n fcg get scaledobject notifications-function >/dev/null 2>&1; then
+      # Teto pelo RELÓGIO, não por número de iterações: a versão anterior somava 18 sleeps de 5s MAIS
+      # 18 `kubectl exec`, então o teto real passava bem dos 90s que a mensagem prometia.
+      LIMITE=$(( $(date +%s) + 90 ))
+      while [ "$(date +%s)" -lt "$LIMITE" ]; do
+        NOTIF=$(kubectl -n fcg exec mongodb-0 -- mongosh --quiet notificationsdb --eval \
+          "print(db.notifications.countDocuments({Recipient:'$EMAIL'}))" 2>/dev/null | tr -d '[:space:]')
+        if [ "${NOTIF:-0}" != "0" ]; then break; fi
+        sleep 5
+      done
+    fi
     kubectl -n fcg exec mongodb-0 -- mongosh --quiet notificationsdb --eval \
       "db.notifications.deleteMany({Recipient:'$EMAIL'});" >/dev/null 2>&1 \
       || echo "  AVISO: nao consegui remover a notificacao de teste (${EMAIL})" >&2
-    if [ "${NOTIF:-0}" = "0" ]; then
+    if [ "${NOTIF:-0}" = "0" ] && kubectl -n fcg get scaledobject notifications-function >/dev/null 2>&1; then
       echo "  AVISO: a notificacao de ${EMAIL} nao apareceu em 90s; pode ficar orfa em notificationsdb" >&2
     fi
   fi
