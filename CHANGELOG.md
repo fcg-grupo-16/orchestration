@@ -5,6 +5,25 @@ Todas as mudanças relevantes deste repositório de orquestração são document
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/)
 e o versionamento adere a [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [0.19.0] - 2026-09-14
+
+### Corrigido
+- **As citações da quebra do trace distribuído apontavam para a issue errada.** A documentação da
+  Fase 3 indicava a [payments-api#20](https://github.com/fcg-grupo-16/payments-api/issues/20) como
+  rastreadora — mas aquela issue é sobre `/metrics` em **404**, e fui eu quem a abriu. A issue da
+  **cadeia de traces** é a
+  [payments-api#19](https://github.com/fcg-grupo-16/payments-api/issues/19): **anterior**, parte do
+  próprio épico, e que já descrevia o problema nas mesmas palavras — *"sem instrumentar este serviço,
+  o trace da compra tem um buraco justamente no meio"* — além de trazer a correção pronta, com o
+  `.AddSource("MassTransit")` que costura a cadeia.
+  Corrigidas 6 citações em ADR 0002, README (2), relatório de entrega (2) e roteiro do vídeo; a
+  tabela de pendências do relatório passou a distinguir as duas issues, que se resolvem pela mesma
+  instrumentação mas respondem a perguntas diferentes.
+  A evidência medida (Jaeger conhecendo 2 de 4 serviços, 0 de 10 traces multi-serviço, os dois traces
+  órfãos da compra) foi levada para a #19, que até então não tinha comentário nenhum.
+  ⚠️ O enquadramento anterior também sugeria que a lacuna fosse achado novo. **Não era** — já estava
+  rastreada; o que faltava eram os números.
+
 ## [0.18.0] - 2026-09-14
 
 ### Corrigido
