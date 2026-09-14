@@ -28,7 +28,7 @@ if ! ERRO=$(kubectl delete -R -f "$ROOT_DIR/k8s/" --ignore-not-found 2>&1); then
   # Formas de erro que o kubectl usa, incluindo indentadas e a de conexão. `E0913 ...` é klog e não
   # indica falha do delete, por isso fica fora da contagem.
   LINHAS_ERRO=$(echo "$ERRO" | grep -E '([Ee]rror|unable to recognize|The connection to the server)' \
-                  | grep -vE '^E[0-9]{4} ' || true)
+                  | grep -vE '^E[0-9]{4} ' || true)   # `|| true`: grep sem match sai 1 e mataria o if
   FORA=$(printf '%s\n' "$LINHAS_ERRO" | grep -v "$TOLERAVEL" | grep -c . || true)
   if echo "$ERRO" | grep -q "$TOLERAVEL" && [ "${FORA:-0}" -eq 0 ]; then
     echo "   aviso: CRDs do Kong ou do KEDA ausentes (já removidos à mão) — seguindo"
@@ -89,7 +89,12 @@ fi
 # usam a MESMA lista. Enumerar só um grupo fazia o delete (que casava `konghq.com$`) ter escopo MAIOR
 # que o guard — e, ao alinhá-los pelo grupo fixo, um grupo novo trazido por upgrade do KIC passaria a
 # ser ignorado em silêncio nos dois.
-KINDS=$(kubectl api-resources -o name 2>/dev/null | grep 'konghq\.com$' | tr '\n' ',' | sed 's/,$//')
+# ⚠️ QUINTA instancia do mesmo fail-open, e a mais ironica: sem `|| true`, um cluster SEM os CRDs do
+# Kong faz o `grep` sair 1, o pipefail propagar e o `set -e` MATAR o script aqui — o `if [ -z "$KINDS" ]`
+# logo abaixo, que existe exatamente para esse cenario, nunca roda. O guard "fail-closed" que eu
+# construi em duas rodadas era inalcancavel no unico caso em que importava.
+# Medido: sem `|| true`, exit 1 e nenhuma saida; com ele, o ramo PRESERVAR e alcancado.
+KINDS=$(kubectl api-resources -o name 2>/dev/null | grep 'konghq\.com$' | tr '\n' ',' | sed 's/,$//' || true)
 if [ -n "$KINDS" ]; then
   # NOTA: KongClusterPlugin, KongVault e KongLicense são CLUSTER-SCOPED e saem sem coluna de
   # namespace, então `$1!="fcg"` os conta como "fora de fcg". Isso falha FECHADO (preserva os CRDs),
@@ -138,7 +143,9 @@ KEDA_VERSION="2.20.2"
 # os CRDs, que são cluster-scoped. Removê-los levaria em cascata os ScaledObject de QUALQUER outro
 # time no cluster. Se a sonda não conseguir se pronunciar, preservamos.
 PRESERVAR_KEDA=""
-KEDA_KINDS=$(kubectl api-resources -o name 2>/dev/null | grep 'keda\.sh$' | tr '\n' ',' | sed 's/,$//')
+# Mesmo caso do KINDS acima: sem `|| true`, cluster sem CRDs do KEDA mata o script antes do
+# `if [ -z "$KEDA_KINDS" ]`.
+KEDA_KINDS=$(kubectl api-resources -o name 2>/dev/null | grep 'keda\.sh$' | tr '\n' ',' | sed 's/,$//' || true)
 if [ -z "$KEDA_KINDS" ]; then
   PRESERVAR_KEDA="nenhum CRD keda.sh no cluster (KEDA já removido, ou nunca instalado)"
 elif KEDA_OUT=$(kubectl get "$KEDA_KINDS" -A --no-headers 2>/dev/null); then

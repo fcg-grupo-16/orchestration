@@ -74,7 +74,8 @@ cleanup() {
       while [ "$(date +%s)" -lt "$LIMITE" ]; do
         # `|| true` pela QUARTA vez nesta entrega, e aqui e a pior: dentro do trap EXIT. Sem ele o
         # pipefail mata o TRAP nesta linha, o deleteMany abaixo nunca roda e o residuo vaza em
-        # SILENCIO -- sem nem o AVISO. E nao e hipotetico: o mongodb-0 tem 11 restarts neste cluster.
+        # SILENCIO -- sem nem o AVISO. E nao e hipotetico: o mongodb-0 reinicia por timeout de
+        # liveness neste cluster (ver issue #41); a contagem sobe, entao nao vale hardcodar numero.
         NOTIF=$(kubectl -n fcg exec mongodb-0 -- mongosh --quiet notificationsdb --eval \
           "print(db.notifications.countDocuments({Recipient:'$EMAIL'}))" 2>/dev/null | tr -d '[:space:]' || true)
         if [ "${NOTIF:-0}" != "0" ]; then break; fi
