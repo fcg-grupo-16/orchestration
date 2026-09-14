@@ -36,15 +36,6 @@ done
 PF=""
 EMAIL=""
 TMPD="$(mktemp -d)"
-# Relógio do PRÓPRIO Mongo, não do host: `date -u` local trunca milissegundos (e no macOS não os
-# produz), o que abriria uma janela de ~1s em que um refresh_token de terceiro seria apagado.
-# ⚠️ `|| true` OBRIGATORIO: sob `set -euo pipefail`, o `pipefail` faz o pipeline `kubectl exec | tr`
-# propagar a falha para a atribuicao, e o `set -e` mata o script AQUI — sem imprimir nada. O fallback
-# abaixo seria, portanto, INALCANCAVEL sem ele. Medido: com pipefail, exit 1 e nenhuma saida;
-# sem pipefail, o fallback e alcancado.
-INICIO="$(kubectl -n "$NS" exec mongodb-0 -- date -u +%Y-%m-%dT%H:%M:%S.%3NZ 2>/dev/null | tr -d '\r' || true)"
-[ -n "$INICIO" ] || INICIO="$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"
-
 cleanup() {
   [ -n "$PF" ] && kill "$PF" 2>/dev/null || true
   # O teste cadastra um usuário REAL para gerar o UserCreatedEvent. Sem esta limpeza o script
@@ -78,12 +69,12 @@ check() { # nome, esperado, obtido
   else printf "  FALHA %-45s esperado=%s obtido=%s\n" "$1" "$2" "$3"; FALHAS=$((FALHAS+1)); fi
 }
 replicas() { kubectl -n "$NS" get deploy "$DEPLOY" -o jsonpath='{.spec.replicas}' 2>/dev/null; }
-# ⚠️ DUAS contagens, e a diferença é o que separava um teste honesto de um falso positivo.
-# `pods_vivos` filtra Terminating; `pods_totais` NÃO. Um pod em Terminating ainda tem o consumer AMQP
-# atado e drena mensagem — então para "está ocioso?" e para "subiu pod novo?" o que vale é o TOTAL.
-# Medido: com `terminationGracePeriodSeconds=30` (default; o manifesto não declara), a janela em que
-# `pods_vivos` devolvia 0 com um pod vivo chegava a 30s.
-pods_vivos() { kubectl -n "$NS" get pods -l "app=$DEPLOY" --no-headers 2>/dev/null | grep -vc Terminating || true; }
+# ⚠️ A contagem NÃO filtra Terminating, e essa é a diferença entre um teste honesto e um falso
+# positivo. Um pod em Terminating ainda tem o consumer AMQP atado e drena mensagem — então tanto para
+# "está ocioso?" quanto para "subiu pod novo?" o que vale é o TOTAL. Uma versão anterior filtrava
+# `Terminating` e, com `terminationGracePeriodSeconds=30` (default; o manifesto não declara), devolvia
+# 0 com um pod vivo por até 30s: a asserção 8 reportava "o KEDA acordou a Function" olhando o pod do
+# ciclo ANTERIOR.
 pods_totais() { kubectl -n "$NS" get pods -l "app=$DEPLOY" --no-headers 2>/dev/null | wc -l | tr -d ' '; }
 pods_nomes()  { kubectl -n "$NS" get pods -l "app=$DEPLOY" -o name 2>/dev/null | tr '\n' ' ' || true; }
 fila() { kubectl -n "$NS" exec deploy/rabbitmq -- rabbitmqctl list_queues name messages 2>/dev/null \
@@ -97,8 +88,8 @@ READY=$(kubectl -n "$NS" get scaledobject "$DEPLOY" \
   -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)
 check "1. ScaledObject Ready" "True" "${READY:-ausente}"
 # Sem este HPA o KEDA não está de fato no controle da escala.
-# `|| true` pela mesma razao do INICIO: sem HPA, o `kubectl get -o name` sai != 0 e o pipefail
-# mataria o script justamente no caso que esta assercao existe para reportar.
+# `|| true` obrigatorio: sem HPA, o `kubectl get -o name` sai != 0 e, sob `set -euo pipefail`, o
+# script morreria justamente no caso que esta assercao existe para reportar.
 HPA=$(kubectl -n "$NS" get hpa "keda-hpa-$DEPLOY" -o name 2>/dev/null | wc -l | tr -d ' ' || true)
 check "2. HPA gerenciado pelo KEDA existe" "1" "$HPA"
 # As duas filas vêm do definitions.json assado na imagem do broker; o RabbitMQTrigger apenas
@@ -137,11 +128,13 @@ check "6. ScaledObject Active=False (fila vazia)" "False" "${ATIVO:-ausente}"
 # um pod do ciclo anterior ainda em Terminating era contado como "o KEDA acordou a Function", e isso
 # foi medido como FALSO POSITIVO — o log do operador não registrava terceiro ciclo de escala, não
 # havia SuccessfulCreate novo, e o ReplicaSet seguia sem pod.
-PODS_ANTES="$(pods_nomes)"
 echo "==> DISPARO: evento real pelo gateway"
 kubectl -n kong port-forward svc/kong-kong-proxy "${GW_PORT}:80" >"$TMPD/pf.log" 2>&1 &
 PF=$!
 for _ in $(seq 1 30); do curl -s -o /dev/null "$GW" && break; sleep 1; done
+# Capturado AQUI, e não antes da espera do port-forward (que leva até 30s): quanto menor a janela
+# entre a captura e o disparo, menor a chance de um pod nascido no meio ser contado como "novo".
+PODS_ANTES="$(pods_nomes)"
 EMAIL="keda-$(date +%s)-$RANDOM@fcg.com"
 printf '{"nome":"KEDA Teste","email":"%s","senha":"Teste@123456"}' "$EMAIL" > "$TMPD/signup.json"
 COD=$(curl -s -o /dev/null -w '%{http_code}' -H "$HOSTH" -H 'Content-Type: application/json' \

@@ -64,13 +64,19 @@ cleanup() {
     # guarda, todo cluster sem o ScaledObject pagava o teto inteiro de espera por um documento que
     # nunca viria.
     NOTIF=0
-    if kubectl -n fcg get scaledobject notifications-function >/dev/null 2>&1; then
+    # Guarda pelo DEPLOYMENT, nao pelo ScaledObject: sem KEDA o Deployment sobe com replicas: 1 e
+    # consome normalmente, entao chavear no ScaledObject pularia espera E aviso num cluster que de
+    # fato grava a notificacao.
+    if kubectl -n fcg get deploy notifications-function >/dev/null 2>&1; then
       # Teto pelo RELÓGIO, não por número de iterações: a versão anterior somava 18 sleeps de 5s MAIS
       # 18 `kubectl exec`, então o teto real passava bem dos 90s que a mensagem prometia.
       LIMITE=$(( $(date +%s) + 90 ))
       while [ "$(date +%s)" -lt "$LIMITE" ]; do
+        # `|| true` pela QUARTA vez nesta entrega, e aqui e a pior: dentro do trap EXIT. Sem ele o
+        # pipefail mata o TRAP nesta linha, o deleteMany abaixo nunca roda e o residuo vaza em
+        # SILENCIO -- sem nem o AVISO. E nao e hipotetico: o mongodb-0 tem 11 restarts neste cluster.
         NOTIF=$(kubectl -n fcg exec mongodb-0 -- mongosh --quiet notificationsdb --eval \
-          "print(db.notifications.countDocuments({Recipient:'$EMAIL'}))" 2>/dev/null | tr -d '[:space:]')
+          "print(db.notifications.countDocuments({Recipient:'$EMAIL'}))" 2>/dev/null | tr -d '[:space:]' || true)
         if [ "${NOTIF:-0}" != "0" ]; then break; fi
         sleep 5
       done
@@ -78,7 +84,7 @@ cleanup() {
     kubectl -n fcg exec mongodb-0 -- mongosh --quiet notificationsdb --eval \
       "db.notifications.deleteMany({Recipient:'$EMAIL'});" >/dev/null 2>&1 \
       || echo "  AVISO: nao consegui remover a notificacao de teste (${EMAIL})" >&2
-    if [ "${NOTIF:-0}" = "0" ] && kubectl -n fcg get scaledobject notifications-function >/dev/null 2>&1; then
+    if [ "${NOTIF:-0}" = "0" ] && kubectl -n fcg get deploy notifications-function >/dev/null 2>&1; then
       echo "  AVISO: a notificacao de ${EMAIL} nao apareceu em 90s; pode ficar orfa em notificationsdb" >&2
     fi
   fi

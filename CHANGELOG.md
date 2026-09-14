@@ -31,6 +31,11 @@ e o versionamento adere a [Semantic Versioning](https://semver.org/lang/pt-BR/).
   Deployment fica em 0 réplica, indistinguível de scale-to-zero saudável, e a asserção decisiva é a de
   **execução** (`Executed ... Succeeded`). São 12 asserções, e o script limpa o que cria nas três
   coleções que toca. (#29)
+- **As asserções do `keda-test.sh` são mutation-testadas.** Quebrando o scaler no cluster (trocando
+  o `queueName` do primeiro trigger por uma fila inexistente) o teste **reprova**: asserções 1, 8, 9
+  e 10 falham e o exit é 1. A 8 é a decisiva — ela dizia `sim` contando o pod moribundo do ciclo
+  anterior, e agora diz `nao`, que é o comportamento correto num sistema quebrado. Um teste que só
+  passa não prova nada; este também reprova quando deve. (#29)
 - Credencial selada `keda-rabbitmq-secret` para o scaler, com **FQDN**. (#29)
 
 ### Modificado

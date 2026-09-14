@@ -35,7 +35,7 @@ RABBIT_HOST="${RABBIT_HOST:-rabbitmq}"
 # [RabbitMQTrigger(..., ConnectionStringSetting = "RabbitMqConnection")].
 # Registra se a conexão veio do AMBIENTE, antes de aplicar o default: serve para avisar sobre a
 # armadilha de rotação logo abaixo.
-RABBIT_CONNECTION_DO_ENV="${RABBIT_CONNECTION+sim}"
+RABBIT_CONNECTION_DO_ENV="${RABBIT_CONNECTION:+sim}"
 RABBIT_CONNECTION="${RABBIT_CONNECTION:-amqp://${RABBIT_USER}:${RABBIT_PASS}@${RABBIT_HOST}:5672/}"
 
 # Conexão com FQDN, EXCLUSIVA do scaler do KEDA.
@@ -51,7 +51,7 @@ RABBIT_CONNECTION="${RABBIT_CONNECTION:-amqp://${RABBIT_USER}:${RABBIT_PASS}@${R
 # Par do RABBIT_CONNECTION_DO_ENV acima. A primeira versão do aviso referenciava esta variável sem
 # nunca atribuí-la, então o segundo teste era SEMPRE verdadeiro: avisava quem exportou as DUAS
 # (fez certo) e ficava calado na divergência inversa. Medido em isolamento.
-RABBIT_CONNECTION_FQDN_DO_ENV="${RABBIT_CONNECTION_FQDN+sim}"
+RABBIT_CONNECTION_FQDN_DO_ENV="${RABBIT_CONNECTION_FQDN:+sim}"
 
 case "$RABBIT_HOST" in
   *.*|localhost) RABBIT_HOST_FQDN="$RABBIT_HOST" ;;
