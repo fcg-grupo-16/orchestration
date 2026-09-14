@@ -57,8 +57,11 @@ demonstrável ao vivo numa gravação de até 20 minutos.
   dois serviços instrumentados registram `AddSource("MassTransit")` exatamente para amarrar publisher
   e consumer, e isso funciona **dentro** de cada um; o elo que falta é o `payments-api`, que não
   continua nem propaga o contexto. Rastreado em
-  [payments-api#20](https://github.com/fcg-grupo-16/payments-api/issues/20) e
+  [payments-api#19](https://github.com/fcg-grupo-16/payments-api/issues/19) — que **antecede** esta
+  medição e já descrevia o buraco no meio da cadeia — e em
   [notifications-function#14](https://github.com/fcg-grupo-16/notifications-function/issues/14).
+  A [payments-api#20](https://github.com/fcg-grupo-16/payments-api/issues/20) é irmã e trata do
+  `/metrics` em 404; as duas se resolvem pela mesma instrumentação.
 
   **Enquanto isso estiver aberto, a documentação não afirma "trace distribuído da compra".** O que
   existe, e é demonstrável, é o trace **por serviço**, incluindo os spans de publicação do outbox.

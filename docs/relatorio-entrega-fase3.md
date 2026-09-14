@@ -97,8 +97,9 @@ requisições por status HTTP, taxa de erro 5xx, top 5 rotas mais lentas e saúd
 > `notifications-function` não têm pacote OpenTelemetry. Dos 10 traces mais recentes de cada serviço
 > instrumentado, **0 de 10** contêm mais de um serviço — a cadeia da compra se parte no
 > `payments-api`, que não propaga o contexto. Rastreado em
-> [payments-api#20](https://github.com/fcg-grupo-16/payments-api/issues/20). O que é demonstrável
-> hoje é o trace **por serviço**, incluindo os spans de publicação do outbox.
+> [payments-api#19](https://github.com/fcg-grupo-16/payments-api/issues/19), aberta antes desta
+> medição como parte do próprio épico. O que é demonstrável hoje é o trace **por serviço**, incluindo
+> os spans de publicação do outbox.
 
 ### 4. NoSQL
 
@@ -134,6 +135,7 @@ Registradas como issues, e não omitidas:
 
 | Issue | O quê |
 |---|---|
-| [payments-api#20](https://github.com/fcg-grupo-16/payments-api/issues/20) | Serviço sem instrumentação: sem `/metrics` e sem traces — é o que quebra o trace distribuído |
+| [payments-api#19](https://github.com/fcg-grupo-16/payments-api/issues/19) | Traces do fluxo de compra: sem instrumentação aqui, a cadeia se parte no meio |
+| [payments-api#20](https://github.com/fcg-grupo-16/payments-api/issues/20) | `/metrics` em 404 — target do Prometheus permanentemente `down` |
 | [orchestration#35](https://github.com/fcg-grupo-16/orchestration/issues/35) | Redis volátil (sem AOF/RDB) sendo usado como store de idempotência |
 | [orchestration#38](https://github.com/fcg-grupo-16/orchestration/issues/38) / [#41](https://github.com/fcg-grupo-16/orchestration/issues/41) | Probes de liveness com timeout curto causando restarts |

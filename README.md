@@ -69,7 +69,8 @@ flowchart TB
 > `payments-api` é raspado pelo Prometheus mas responde **404** em `/metrics`, e nem ele nem a
 > `notifications-function` exportam traces — por isso não há seta OTLP saindo deles. É o que faz a
 > cadeia de trace da compra se partir. Ver a ressalva na seção de observabilidade,
-> [payments-api#20](https://github.com/fcg-grupo-16/payments-api/issues/20) e o
+> [payments-api#19](https://github.com/fcg-grupo-16/payments-api/issues/19) (traces),
+> [payments-api#20](https://github.com/fcg-grupo-16/payments-api/issues/20) (`/metrics`) e o
 > [ADR 0002](docs/adr/0002-observabilidade-opcao-a.md).
 >
 > A `notifications-function` **não** tem rota no gateway: é event-driven, acordada pelo KEDA quando
@@ -645,8 +646,10 @@ escolha aqui**. Optamos pela **Opção A**, por três motivos:
 >
 > A cadeia da compra é `catalog-api → RabbitMQ → payments-api → RabbitMQ → catalog-api`, e o elo do
 > meio não continua nem propaga o contexto — então ela se parte em dois traces órfãos. Rastreado em
-> [payments-api#20](https://github.com/fcg-grupo-16/payments-api/issues/20). O que existe hoje, e é
-> demonstrável, é o trace **por serviço**, incluindo os spans do outbox.
+> [payments-api#19](https://github.com/fcg-grupo-16/payments-api/issues/19), que é **anterior** a
+> esta medição e já dizia o mesmo: *"sem instrumentar este serviço, o trace da compra tem um buraco
+> justamente no meio"*. O que existe hoje, e é demonstrável, é o trace **por serviço**, incluindo os
+> spans do outbox.
 
 ### Como os serviços são descobertos
 
