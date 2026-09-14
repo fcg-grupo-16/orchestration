@@ -26,7 +26,7 @@ flowchart TB
     subgraph FCG["namespace fcg"]
       Users["users-api · .NET 10<br/>/metrics · OTLP"]
       Catalog["catalog-api · .NET 10<br/>/metrics · OTLP"]
-      Payments["payments-api · .NET 10<br/>sem instrumentação"]
+      Payments["payments-api · .NET 10<br/>/metrics · OTLP"]
       Func["notifications-function · .NET 8<br/>Azure Functions + KEDA<br/>escala 0..5"]
 
       Rabbit[("RabbitMQ 3.13.7<br/>+ delayed message exchange")]
@@ -58,19 +58,19 @@ flowchart TB
 
     Prom -->|scrape /metrics| Users
     Prom -->|scrape /metrics| Catalog
-    Prom -->|scrape: 404, target down| Payments
+    Prom -->|scrape /metrics| Payments
     Graf --> Prom
     Graf --> Jaeger
     Users -.->|OTLP| Jaeger
     Catalog -.->|OTLP| Jaeger
+    Payments -.->|OTLP| Jaeger
 ```
 
-> **O diagrama é o estado real, não o desejado.** Duas ausências estão desenhadas de propósito: o
-> `payments-api` é raspado pelo Prometheus mas responde **404** em `/metrics`, e nem ele nem a
-> `notifications-function` exportam traces — por isso não há seta OTLP saindo deles. É o que faz a
-> cadeia de trace da compra se partir. Ver a ressalva na seção de observabilidade,
-> [payments-api#19](https://github.com/fcg-grupo-16/payments-api/issues/19) (traces),
-> [payments-api#20](https://github.com/fcg-grupo-16/payments-api/issues/20) (`/metrics`) e o
+> **O diagrama é o estado real, não o desejado.** Uma ausência está desenhada de propósito: a
+> `notifications-function` não exporta traces — por isso não há seta OTLP saindo dela. É o que faz a
+> cadeia do **cadastro** (`users-api → Function`) não fechar, e está rastreado em
+> [notifications-function#14](https://github.com/fcg-grupo-16/notifications-function/issues/14).
+> A cadeia da **compra** fecha: ver a seção de observabilidade e o
 > [ADR 0002](docs/adr/0002-observabilidade-opcao-a.md).
 >
 > A `notifications-function` **não** tem rota no gateway: é event-driven, acordada pelo KEDA quando
@@ -626,31 +626,38 @@ escolha aqui**. Optamos pela **Opção A**, por três motivos:
 |---|---|---|
 | **Prometheus** | raspa `/metrics` dos pods e armazena as séries (retenção 6h) | `kubectl -n fcg port-forward svc/prometheus 9090:9090` |
 | **Grafana** | dashboard de latência, throughput e erros | `kubectl -n fcg port-forward svc/grafana 3000:3000` — admin/admin |
-| **Jaeger** | recebe traces OTLP — cobertura **parcial**, ver a ressalva abaixo | `kubectl -n fcg port-forward svc/jaeger 16686:16686` |
+| **Jaeger** | recebe traces OTLP de 3 dos 4 serviços — ver a ressalva abaixo | `kubectl -n fcg port-forward svc/jaeger 16686:16686` |
 
 > **Por que Jaeger, se a Opção A só exige métricas?** Para cobrir o terceiro pilar da
 > observabilidade, que o desafio só pede na Opção B. O `users-api` e o `catalog-api` instrumentam com
 > OpenTelemetry e registram `AddSource("MassTransit")`, o que amarra os spans de publicação do outbox
 > ao span HTTP que os originou.
 >
-> ⚠️ **A cobertura é PARCIAL, e não há trace distribuído entre serviços. Medido, não estimado.**
-> `GET /api/services` no Jaeger devolve apenas `catalog-api` e `users-api`: o `payments-api` e a
-> `notifications-function` **não têm nenhum pacote OpenTelemetry**, embora os manifestos definam
-> `OTEL_SERVICE_NAME` e `OTEL_EXPORTER_OTLP_ENDPOINT` para os dois — configuração para um SDK que não
-> está lá. Consultando os 10 traces mais recentes de cada serviço instrumentado, **0 de 10** contêm
-> mais de um serviço:
+> **A cadeia da COMPRA fecha num único trace. Medido, não estimado.** `GET /api/services` no Jaeger
+> devolve `catalog-api`, `payments-api` e `users-api`, e o fluxo de compra aparece inteiro:
 >
 > ```
-> 108ab43a6b39  spans=4  [catalog-api]  POST api/v1/biblioteca · outbox send · OrderPlacedEvent send
-> 162cda3b474c  spans=2  [catalog-api]  catalog-payment-processed receive · process   <-- trace SEPARADO
+> trace 12a9febb22840ab46a93a61d4df07983 — 9 spans, DOIS serviços
+>   +0.0ms     [catalog-api ] POST api/v1/biblioteca
+>   +262.0ms   [catalog-api ] outbox send
+>   +576.8ms   [catalog-api ] Fcg.Contracts.Events:OrderPlacedEvent send
+>   +621.1ms   [payments-api] payments-order-placed receive        <- cruza o broker
+>   +660.5ms   [payments-api] payments-order-placed process
+>   +1245.0ms  [payments-api] Fcg.Contracts.Events:PaymentProcessedEvent send
+>   +1266.3ms  [catalog-api ] catalog-payment-processed receive    <- e volta
+>   +1301.5ms  [catalog-api ] catalog-payment-processed process
 > ```
 >
-> A cadeia da compra é `catalog-api → RabbitMQ → payments-api → RabbitMQ → catalog-api`, e o elo do
-> meio não continua nem propaga o contexto — então ela se parte em dois traces órfãos. Rastreado em
-> [payments-api#19](https://github.com/fcg-grupo-16/payments-api/issues/19), que é **anterior** a
-> esta medição e já dizia o mesmo: *"sem instrumentar este serviço, o trace da compra tem um buraco
-> justamente no meio"*. O que existe hoje, e é demonstrável, é o trace **por serviço**, incluindo os
-> spans do outbox.
+> O span do `payments-api` carrega os atributos de negócio (`fcg.order.id`, `fcg.payment.status`,
+> `fcg.payment.rule`), e o serviço passou a expor `/metrics` — o alvo do Prometheus saiu de `down`
+> para `up` (UP=4, DOWN=0). Entregue em
+> [payments-api#19](https://github.com/fcg-grupo-16/payments-api/issues/19) e
+> [#20](https://github.com/fcg-grupo-16/payments-api/issues/20).
+>
+> ⚠️ **A cadeia do CADASTRO ainda não fecha.** A `notifications-function` continua sem OpenTelemetry,
+> então os traces do `users-api` seguem em **0 de 10** multi-serviço: o `UserCreatedEvent` é publicado
+> com contexto, e o contexto morre quando a Function o consome. Rastreado em
+> [notifications-function#14](https://github.com/fcg-grupo-16/notifications-function/issues/14).
 
 ### Como os serviços são descobertos
 
@@ -702,12 +709,14 @@ estável do OpenTelemetry.
 | Requisições por status code | **contagem por status HTTP** | `sum by (http_response_status_code) (rate(..._count[5m]))` |
 | Taxa de erro 5xx | **taxa de erros** | `100 * (sum(rate(..._count{...5xx}[5m])) or vector(0)) / clamp_min(sum(rate(..._count[5m])), 0.001)` |
 
-> ⚠️ **Os painéis ficam vazios até a instrumentação dos serviços entrar.** Este repositório entrega
-> a stack e o contrato de coleta; o endpoint `/metrics` nasce em `users-api#19`, `catalog-api#19` e
-> `payments-api#19`. Até lá o Prometheus **descobre** os três pods e os mostra como `DOWN` com
-> `404 Not Found` em `/metrics` — o que é o comportamento correto e a prova de que a descoberta e a
-> rede estão certas. Acompanhe em **Status → Targets** no Prometheus, ou pelo painel *Saúde da
-> coleta* do próprio dashboard.
+> ⚠️ **Painel vazio hoje significa falta de tráfego, não falta de instrumentação.** Os três
+> serviços ASP.NET expõem `/metrics` desde `users-api#19`, `catalog-api#19` e `payments-api#19`
+> (as três fechadas), e a coleta mede **UP=4, DOWN=0** — os quatro alvos são os três serviços mais o
+> próprio Prometheus. O que sobra é outra causa: as queries usam `rate(...[5m])`, então sem
+> requisições nos últimos cinco minutos não existe série e o painel fica em branco com a plataforma
+> perfeitamente saudável. Exercite os fluxos (`./scripts/smoke-test.sh`) antes de julgar o
+> dashboard. Para separar um caso do outro, veja **Status → Targets** no Prometheus, ou o painel
+> *Saúde da coleta* do próprio dashboard.
 >
 > ⚠️ **Ao instrumentar, confirme o nome real da métrica** no autocomplete do Prometheus: dependendo
 > da versão do exportador ela pode sair como `http_server_request_duration_seconds` ou

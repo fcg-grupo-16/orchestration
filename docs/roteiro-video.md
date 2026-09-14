@@ -31,8 +31,8 @@ faltando Enter:
 | 0:00–1:30 | **Contexto** | Diagrama do README. Os 5 requisitos da fase e onde cada um está |
 | 1:30–5:00 | **1. Gateway** | `curl` sem token → **401 com `Server: kong/3.9.3`** (é o gateway, não o serviço); login → token; com token → 200; `?jwt=<token>` → **401** (não se aceita token por querystring); abrir `k8s/gateway/41-kong-plugins.yaml`; `./scripts/gateway-test.sh` → 17/17 |
 | 5:00–9:00 | **2. Serverless** | Terminal 3 mostrando **0/0 réplicas**; cadastrar usuário pelo gateway; o pod nascendo ao vivo; `kubectl logs` com `Executed 'Functions.UserCreatedFunction' (Succeeded)`; ~60s depois, **volta a zero**; abrir o `ScaledObject` e o `RabbitMQTrigger` |
-| 9:00–13:00 | **3. Observabilidade (Opção A)** | Dashboard do Grafana ao vivo; gerar tráfego e ver p95/throughput reagirem; `/targets` do Prometheus; **dizer em voz alta que a escolha é a Opção A e por quê** |
-| 13:00–14:00 | **3b. Traces (cobertura parcial)** | Jaeger: trace do `POST /api/v1/biblioteca` no `catalog-api`, com os spans do **outbox** e da publicação do `OrderPlacedEvent`. **Declarar a limitação:** o `payments-api` ainda não está instrumentado, então a cadeia não fecha entre serviços — está registrado em payments-api#19 |
+| 9:00–13:00 | **3. Observabilidade (Opção A)** | Dashboard do Grafana ao vivo; gerar tráfego e ver p95/throughput reagirem; `/targets` do Prometheus — os **quatro** alvos aparecem `up` (UP=4, DOWN=0), pode abrir sem receio; mostrar a métrica de negócio `fcg_payment_decisions_total` com os labels `status` e `rule`; **dizer em voz alta que a escolha é a Opção A e por quê** |
+| 13:00–14:00 | **3b. Trace distribuído da compra** | Jaeger: abrir o trace do `POST /api/v1/biblioteca` e percorrer os **9 spans** atravessando `catalog-api → RabbitMQ → payments-api → RabbitMQ → catalog-api`; mostrar os atributos `fcg.payment.status` e `fcg.payment.rule` no span do pagamento. **Ressalva honesta:** a cadeia do **cadastro** não fecha — a Function ainda não tem OTel (notifications-function#14) |
 | 14:00–17:00 | **4. NoSQL** | `POST /api/v1/avaliacoes` → 201; repetir com o mesmo usuário → **409** (índice unique); `GET .../avaliacoes/resumo` → média e distribuição; no `mongosh`: `db.avaliacoes.findOne()` mostrando o `contexto` livre e `db.avaliacoes.getIndexes()` |
 | 17:00–19:00 | **5. Cache** | Duas chamadas iguais com `curl -w '%{time_total}'`; `redis-cli --scan --pattern 'fcg:catalog:*'` mostrando a chave com a **geração**; atualizar um jogo; mostrar a geração **incrementada** e a chave nova |
 | 19:00–20:00 | **Fechamento** | `./scripts/verify-fase3.sh` verde; README e ADRs |
@@ -66,10 +66,9 @@ kubectl -n fcg exec deploy/redis -- redis-cli --scan --pattern 'fcg:catalog:*'
 
 ## O que NÃO prometer na narração
 
-- **"Trace distribuído da compra"** — não existe hoje. O `payments-api` não tem OpenTelemetry, então
-  a cadeia se parte em dois traces órfãos (medido: 0 de 10 traces com mais de um serviço). Mostre o
-  trace **por serviço** e declare a limitação; é mais forte do que ser pego por ela.
+- **"Trace distribuído de toda a plataforma"** — só a cadeia da **compra** fecha. A do **cadastro**
+  (`users-api → notifications-function`) não: a Function ainda não tem OpenTelemetry, e os traces do
+  `users-api` seguem em 0 de 10 multi-serviço (notifications-function#14). Mostre a compra, que é a
+  forte, e declare essa limitação; é mais sólido do que ser pego por ela.
 - **E-mail de notificação no `docker compose`** — no compose ninguém consome as filas desde a
   remoção do `notifications-api`. O fluxo de notificação só é observável no cluster.
-- **`/metrics` do `payments-api`** — devolve 404; o serviço não tem instrumentação (payments-api#20).
-  Se abrir o `/targets` do Prometheus, esse alvo aparece **down**: explique em vez de desviar.

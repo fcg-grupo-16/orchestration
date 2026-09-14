@@ -85,16 +85,16 @@ print(f"{len(up)}|{len(down)}|{nomes(down)}")
 PY
 )"
   UP="${LEITURA%%|*}"; RESTO="${LEITURA#*|}"; DOWN="${RESTO%%|*}"; QUEM="${RESTO#*|}"
-  [ "${UP:-0}" -ge 3 ] && ok "Prometheus raspando: $UP target(s) UP" || fail "só $UP target(s) UP (esperado >= 3)"
-  # payments-api não tem instrumentação nenhuma (nem pacotes OTel): /metrics devolve 404 e o target
-  # fica down permanente, embora o pod anuncie prometheus.io/scrape "true". É lacuna conhecida e
-  # rastreada em payments-api#20 — AVISO, não falha, para o checklist não ficar vermelho para sempre
-  # por causa de um serviço de outro repositório.
+  # São QUATRO alvos: users-api, catalog-api, payments-api e o próprio prometheus. A
+  # notifications-function fica de fora de propósito (`prometheus.io/scrape: "false"`): com
+  # scale-to-zero o pod vive segundos, incompatível com o pull do Prometheus.
+  [ "${UP:-0}" -ge 4 ] && ok "Prometheus raspando: $UP target(s) UP" || fail "só $UP target(s) UP (esperado >= 4)"
+  # QUALQUER alvo em down é falha. Até payments-api#19/#20 havia aqui uma exceção que rebaixava o
+  # `payments-api` a mero aviso, porque ele não tinha instrumentação e o alvo ficava down em
+  # permanência. A exceção foi removida junto com a causa — mantê-la seria pior que texto obsoleto:
+  # um alvo caído por motivo REAL passaria como benigno, e o checklist diria "PRONTO PARA GRAVAR".
   if [ "${DOWN:-0}" -gt 0 ]; then
-    case "$QUEM" in
-      payments-api) aviso "target 'payments-api' down: serviço sem instrumentação (payments-api#20)" ;;
-      *)            fail "target(s) down: $QUEM" ;;
-    esac
+    fail "target(s) down: $QUEM"
   fi
 else
   aviso "não consegui consultar o Prometheus via port-forward (pulei a checagem de targets)"

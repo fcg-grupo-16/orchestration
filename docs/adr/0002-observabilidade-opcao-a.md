@@ -41,30 +41,33 @@ demonstrável ao vivo numa gravação de até 20 minutos.
   impecavelmente de pé com **todos os alvos em 404**, o que faz o dashboard inteiro ficar vazio sem
   nenhum erro visível. Aconteceu neste projeto (issue #40), e é por isso que
   `scripts/verify-fase3.sh` afere **saúde de target**, não "o Deployment existe".
-- ⚠️ **A cobertura de traces é PARCIAL — 2 dos 4 serviços — e não há trace distribuído.** Medido no
-  cluster: `GET /api/services` do Jaeger devolve apenas `catalog-api` e `users-api`; o `payments-api`
-  e a `notifications-function` não têm **nenhum** pacote OpenTelemetry, embora os manifestos definam
-  `OTEL_SERVICE_NAME` e `OTEL_EXPORTER_OTLP_ENDPOINT` para os dois — configuração para um SDK
-  ausente. Consultando os 10 traces mais recentes de cada serviço instrumentado, **0 de 10** contêm
-  mais de um serviço:
+- **A cadeia da COMPRA fecha num único trace — 3 dos 4 serviços instrumentados.** Medido no cluster
+  após [payments-api#19](https://github.com/fcg-grupo-16/payments-api/issues/19) e
+  [#20](https://github.com/fcg-grupo-16/payments-api/issues/20): `GET /api/services` devolve
+  `catalog-api`, `payments-api` e `users-api`, e o fluxo aparece costurado de ponta a ponta:
 
   ```
-  108ab43a6b39  spans=4  [catalog-api]  POST api/v1/biblioteca · outbox send · OrderPlacedEvent send
-  162cda3b474c  spans=2  [catalog-api]  catalog-payment-processed receive · process   <-- trace SEPARADO
+  trace 12a9febb22840ab46a93a61d4df07983 — 9 spans, DOIS serviços
+    +0.0ms     [catalog-api ] POST api/v1/biblioteca
+    +576.8ms   [catalog-api ] Fcg.Contracts.Events:OrderPlacedEvent send
+    +621.1ms   [payments-api] payments-order-placed receive        <- cruza o broker
+    +660.5ms   [payments-api] payments-order-placed process
+    +1245.0ms  [payments-api] Fcg.Contracts.Events:PaymentProcessedEvent send
+    +1266.3ms  [catalog-api ] catalog-payment-processed receive    <- e volta
+    +1301.5ms  [catalog-api ] catalog-payment-processed process
   ```
 
-  A cadeia real da compra é catalog-api → RabbitMQ → **payments-api** → RabbitMQ → catalog-api. Os
-  dois serviços instrumentados registram `AddSource("MassTransit")` exatamente para amarrar publisher
-  e consumer, e isso funciona **dentro** de cada um; o elo que falta é o `payments-api`, que não
-  continua nem propaga o contexto. Rastreado em
-  [payments-api#19](https://github.com/fcg-grupo-16/payments-api/issues/19) — que **antecede** esta
-  medição e já descrevia o buraco no meio da cadeia — e em
+  É o `.AddSource("MassTransit")` nos três serviços que costura publisher e consumer; o
+  `payments-api` era o elo que faltava. Junto veio o `/metrics` dele (o alvo do Prometheus saiu de
+  `down` para `up`: UP=4, DOWN=0) e uma métrica de negócio, `fcg_payment_decisions_total`, com
+  labels `status` e `rule`.
+
+  ⚠️ **A cadeia do CADASTRO ainda NÃO fecha.** A `notifications-function` continua sem OpenTelemetry,
+  e os traces do `users-api` seguem em **0 de 10** multi-serviço: o `UserCreatedEvent` sai com
+  contexto e o contexto morre quando a Function o consome. Rastreado em
   [notifications-function#14](https://github.com/fcg-grupo-16/notifications-function/issues/14).
-  A [payments-api#20](https://github.com/fcg-grupo-16/payments-api/issues/20) é irmã e trata do
-  `/metrics` em 404; as duas se resolvem pela mesma instrumentação.
-
-  **Enquanto isso estiver aberto, a documentação não afirma "trace distribuído da compra".** O que
-  existe, e é demonstrável, é o trace **por serviço**, incluindo os spans de publicação do outbox.
+  Enquanto isso estiver aberto, a documentação afirma o trace distribuído **da compra**, não o de
+  toda a plataforma.
 - O span do MongoDB não aparece: o driver 3.x exige o pacote
   `MongoDB.Driver.Core.Extensions.DiagnosticSources` para emitir activities, e sem ele um `AddSource`
   seria silenciosamente ignorado — o código registra isso para ninguém "consertar" com uma linha que
@@ -76,4 +79,5 @@ demonstrável ao vivo numa gravação de até 20 minutos.
   mesmo esforço de instrumentação.
 - **Grafana Cloud / Datadog / New Relic** — exigem conta e rede; a demonstração precisa rodar offline.
 - **Só Prometheus, sem Jaeger** — atenderia à métrica, mas deixaria o pilar de traces sem nenhuma
-  cobertura. Com Jaeger, a cobertura é parcial e **verificável**, o que é melhor do que ausente.
+  cobertura. Com Jaeger a cobertura é **verificável**, e foi justamente medindo-a que a lacuna do
+  `payments-api` apareceu e foi fechada.

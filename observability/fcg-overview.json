@@ -32,7 +32,7 @@
       "gridPos": { "h": 4, "w": 24, "x": 0, "y": 0 },
       "options": {
         "mode": "markdown",
-        "content": "As quatro métricas exigidas pela Fase 3 — **latência**, **contagem de requisições**, **contagem por status code HTTP** e **taxa de erro** — vêm todas do histograma `http_server_request_duration_seconds`, que o ASP.NET Core instrumenta por conta própria — o SDK OpenTelemetry apenas o exporta no formato Prometheus. Nenhuma métrica customizada foi necessária.\n\n> ⚠️ **Painéis vazios?** Os microsserviços só passam a expor `/metrics` depois de `users-api#19`, `catalog-api#19` e `payments-api#19`. Até lá, o Prometheus descobre os pods mas os targets ficam `DOWN` — confira em **Status → Targets** no Prometheus. O painel *Saúde da coleta* abaixo mostra quantos targets estão de pé."
+        "content": "As quatro métricas exigidas pela Fase 3 — **latência**, **contagem de requisições**, **contagem por status code HTTP** e **taxa de erro** — vêm todas do histograma `http_server_request_duration_seconds`, que o ASP.NET Core instrumenta por conta própria — o SDK OpenTelemetry apenas o exporta no formato Prometheus. Nenhuma métrica customizada foi necessária.\n\n> ⚠️ **Painel vazio aqui significa falta de tráfego, não falta de instrumentação.** Os três serviços expõem `/metrics` e a coleta está em **UP=4, DOWN=0**. As queries usam `rate(...[5m])`: sem requisições nos últimos cinco minutos não há série, e o painel fica em branco com a plataforma saudável. Exercite os fluxos e confira **Status → Targets** no Prometheus; o painel *Saúde da coleta* abaixo mostra quantos alvos estão de pé."
       }
     },
     {
