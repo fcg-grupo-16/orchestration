@@ -11,6 +11,80 @@ seu próprio repositório.
 
 [![CI](https://github.com/fcg-grupo-16/orchestration/actions/workflows/ci.yml/badge.svg)](https://github.com/fcg-grupo-16/orchestration/actions/workflows/ci.yml)
 
+## Arquitetura
+
+```mermaid
+flowchart TB
+    Cliente(["Cliente"])
+
+    subgraph KONG["namespace kong"]
+      Gateway["Kong 3.9 — API Gateway<br/>api.fcg.local :80<br/>plugin jwt · rate-limiting por IP"]
+    end
+
+    Cliente --> Gateway
+
+    subgraph FCG["namespace fcg"]
+      Users["users-api · .NET 10<br/>/metrics · OTLP"]
+      Catalog["catalog-api · .NET 10<br/>/metrics · OTLP"]
+      Payments["payments-api · .NET 10<br/>sem instrumentação"]
+      Func["notifications-function · .NET 8<br/>Azure Functions + KEDA<br/>escala 0..5"]
+
+      Rabbit[("RabbitMQ 3.13.7<br/>+ delayed message exchange")]
+      Mongo[("MongoDB 7 — rs0<br/>usersdb · catalogdb<br/>paymentsdb · notificationsdb")]
+      Redis[("Redis 7.4<br/>cache + idempotência")]
+
+      Prom["Prometheus 3.5"]
+      Graf["Grafana 12.1"]
+      Jaeger["Jaeger 1.62"]
+    end
+
+    Gateway -->|rotas públicas e protegidas| Users
+    Gateway -->|rotas protegidas| Catalog
+
+    Users --> Mongo
+    Users --> Redis
+    Catalog --> Mongo
+    Catalog --> Redis
+    Payments --> Mongo
+    Func --> Mongo
+    Func --> Redis
+
+    Users -.->|UserCreatedEvent| Rabbit
+    Catalog -.->|OrderPlacedEvent| Rabbit
+    Rabbit -.->|OrderPlacedEvent| Payments
+    Payments -.->|PaymentProcessedEvent| Rabbit
+    Rabbit -.->|PaymentProcessedEvent| Catalog
+    Rabbit -.->|trigger: 2 filas| Func
+
+    Prom -->|scrape /metrics| Users
+    Prom -->|scrape /metrics| Catalog
+    Prom -->|scrape: 404, target down| Payments
+    Graf --> Prom
+    Graf --> Jaeger
+    Users -.->|OTLP| Jaeger
+    Catalog -.->|OTLP| Jaeger
+```
+
+> **O diagrama é o estado real, não o desejado.** Duas ausências estão desenhadas de propósito: o
+> `payments-api` é raspado pelo Prometheus mas responde **404** em `/metrics`, e nem ele nem a
+> `notifications-function` exportam traces — por isso não há seta OTLP saindo deles. É o que faz a
+> cadeia de trace da compra se partir. Ver a ressalva na seção de observabilidade,
+> [payments-api#20](https://github.com/fcg-grupo-16/payments-api/issues/20) e o
+> [ADR 0002](docs/adr/0002-observabilidade-opcao-a.md).
+>
+> A `notifications-function` **não** tem rota no gateway: é event-driven, acordada pelo KEDA quando
+> entra mensagem na fila. O `payments-api` idem.
+
+## Decisões de arquitetura (ADRs)
+
+| ADR | Decisão |
+|---|---|
+| [0001](docs/adr/0001-api-gateway-kong.md) | Kong Ingress Controller como única porta de entrada |
+| [0002](docs/adr/0002-observabilidade-opcao-a.md) | Observabilidade pela **Opção A** (Prometheus + Grafana), com Jaeger |
+| [0003](docs/adr/0003-serverless-azure-functions-keda.md) | Azure Functions em container com KEDA, e não o plano Consumption |
+| [0004](docs/adr/0004-nosql-avaliacoes.md) | Avaliações em MongoDB com o driver nativo |
+| [0005](docs/adr/0005-cache-redis-invalidacao-por-geracao.md) | Cache em Redis com invalidação por geração de chave |
+
 ## Microsserviços
 
 | Serviço | Repositório | Responsabilidade | Eventos |
@@ -21,7 +95,10 @@ seu próprio repositório.
 | **NotificationsFunction** | [`notifications-function`](https://github.com/fcg-grupo-16/notifications-function) | "Envia" e-mails (log no console), **serverless com scale-to-zero** | consome `UserCreatedEvent` e `PaymentProcessedEvent` |
 | ~~NotificationsAPI~~ | [`notifications-api`](https://github.com/fcg-grupo-16/notifications-api) | **DEPRECADO na Fase 3** — substituído pela Function acima (#29) | — |
 
-**Stack:** .NET 10 · MongoDB (database por serviço) · **Redis** (cache distribuído) · RabbitMQ + MassTransit · **Prometheus + Grafana + Jaeger** (observabilidade) · Docker · Kubernetes.
+**Stack:** .NET 10 nos três serviços ASP.NET · **.NET 8** na `notifications-function` (o worker
+isolado do Azure Functions v4) · MongoDB 7 (database por serviço) · **Redis 7.4** (cache distribuído)
+· RabbitMQ 3.13.7 + MassTransit · **Kong 3.9** (gateway) · **KEDA 2.20.2** (scale-to-zero) ·
+**Prometheus 3.5 + Grafana 12.1 + Jaeger 1.62** (observabilidade) · Docker · Kubernetes.
 
 > **RabbitMQ com plugin de mensagens atrasadas.** O broker roda uma imagem custom
 > (`docker/rabbitmq/`: `rabbitmq:3.13.7-management` + `rabbitmq_delayed_message_exchange`),
@@ -50,18 +127,28 @@ seu próprio repositório.
 ```mermaid
 flowchart LR
     subgraph Cadastro
-      U[UsersAPI] -- UserCreatedEvent --> N1[NotificationsAPI<br/>e-mail boas-vindas]
+      U[users-api] -- UserCreatedEvent --> F1["notifications-function<br/>UserCreatedFunction<br/>(KEDA acorda do zero)"]
     end
     subgraph Compra
-      C[CatalogAPI] -- OrderPlacedEvent --> P[PaymentsAPI]
-      P -- PaymentProcessedEvent --> C2[CatalogAPI<br/>grava biblioteca se Approved]
-      P -- PaymentProcessedEvent --> N2[NotificationsAPI<br/>e-mail confirmação se Approved]
+      C[catalog-api] -- OrderPlacedEvent --> P[payments-api]
+      P -- PaymentProcessedEvent --> C2[catalog-api<br/>grava biblioteca se Approved]
+      P -- PaymentProcessedEvent --> F2["notifications-function<br/>PaymentProcessedFunction<br/>(KEDA acorda do zero)"]
     end
 ```
 
-**Fluxo de cadastro:** `UsersAPI` cria o usuário e publica `UserCreatedEvent` → `NotificationsAPI` envia o e-mail de boas-vindas.
+**Fluxo de cadastro:** `users-api` cria o usuário e publica `UserCreatedEvent` → a
+`notifications-function` é **acordada do zero pelo KEDA** e envia o e-mail de boas-vindas.
 
-**Fluxo de compra:** `CatalogAPI` recebe a requisição de aquisição e publica `OrderPlacedEvent` (UserId, GameId, Price) → `PaymentsAPI` processa e publica `PaymentProcessedEvent` (Approved/Rejected) → `CatalogAPI` grava na biblioteca se aprovado, e `NotificationsAPI` envia o e-mail de confirmação.
+**Fluxo de compra:** `catalog-api` recebe a requisição de aquisição e publica `OrderPlacedEvent`
+(UserId, GameId, Price) → `payments-api` processa e publica `PaymentProcessedEvent`
+(Approved/Rejected) → `catalog-api` grava na biblioteca se aprovado, e a `notifications-function`
+envia o e-mail de confirmação.
+
+> ⚠️ **Os dois consumidores de notificação só existem no cluster.** A `notifications-function`
+> depende do KEDA e **não está no `docker-compose.yml`**: no caminho do compose ninguém consome
+> `notifications-user-created` nem `notifications-payment-processed`, e as mensagens **acumulam** nas
+> filas — nada quebra, mas não há e-mail simulado para ver. Até a Fase 2 quem consumia era o
+> `notifications-api`, hoje [deprecado](https://github.com/fcg-grupo-16/notifications-api).
 
 ## Estrutura de diretórios esperada
 
@@ -92,12 +179,25 @@ A partir deste repositório:
 docker compose up --build
 ```
 
-Sobe RabbitMQ, MongoDB e os 4 microsserviços. Portas expostas no host:
+Sobe RabbitMQ, MongoDB, Redis, a stack de observabilidade e os **3 microsserviços** (a
+`notifications-function` não está no compose — ver a ressalva no fim desta seção).
 
-| Serviço | URL | Swagger |
-|---|---|---|
-| users-api | http://localhost:8081 | /swagger |
-| catalog-api | http://localhost:8082 | /swagger |
+| Componente | Compose (host) | Kubernetes (port-forward) | Credencial |
+|---|---|---|---|
+| **Kong (gateway)** | — (só no cluster) | `kubectl -n kong port-forward svc/kong-kong-proxy 8000:80` | — |
+| users-api | <http://localhost:8081> | `kubectl -n fcg port-forward svc/users-api 8081:80` | — |
+| catalog-api | <http://localhost:8082> | `kubectl -n fcg port-forward svc/catalog-api 8082:80` | — |
+| payments-api | <http://localhost:8083> (worker) | `kubectl -n fcg port-forward svc/payments-api 8083:80` | — |
+| notifications-function | — (use `func start` no repo dela) | escala a zero — sem porta | — |
+| **Grafana** | <http://localhost:3000> | `kubectl -n fcg port-forward svc/grafana 3000:3000` | admin / admin |
+| **Prometheus** | <http://localhost:9090> | `kubectl -n fcg port-forward svc/prometheus 9090:9090` | — |
+| **Jaeger** | <http://localhost:16686> | `kubectl -n fcg port-forward svc/jaeger 16686:16686` | — |
+| RabbitMQ Management | <http://localhost:15672> | `kubectl -n fcg port-forward svc/rabbitmq 15672:15672` | guest / guest |
+| MongoDB | `mongodb://localhost:27017/?replicaSet=rs0` | `kubectl -n fcg port-forward svc/mongodb 27017:27017` | — |
+| Redis | `localhost:6379` | `kubectl -n fcg port-forward svc/redis 6379:6379` | — |
+
+> As portas do host podem estar **remapeadas nesta máquina** pelo `docker-compose.override.yml`
+> (gitignored). Confira com `docker compose ps`.
 
 > ⚠️ **O compose NÃO tem o API Gateway, e o contrato observável difere do cluster.** No compose os
 > serviços são acessados direto nas portas acima, sem gateway: `GET /api/v1/jogos` responde **200
@@ -105,13 +205,6 @@ Sobe RabbitMQ, MongoDB e os 4 microsserviços. Portas expostas no host:
 > limite por IP. É decisão deliberada (decisão 3 do épico #24 — manter um `kong.yml` paralelo
 > duplicaria a configuração do gateway), mas significa que **um cliente escrito contra o compose
 > pode quebrar no cluster**. Ao desenvolver contra o compose, trate o token como obrigatório.
-| payments-api | http://localhost:8083 | (worker) |
-| RabbitMQ Management | http://localhost:15672 | guest / guest |
-| MongoDB | mongodb://localhost:27017/?replicaSet=rs0 | — |
-| Redis | localhost:6379 | — |
-| **Grafana** | http://localhost:3000 | admin / admin |
-| **Prometheus** | http://localhost:9090 | — |
-| **Jaeger** | http://localhost:16686 | — |
 
 > Swagger só é exposto em ambiente Development. Para ativá-lo no compose, troque
 > `ASPNETCORE_ENVIRONMENT` para `Development` no serviço desejado.
@@ -213,6 +306,14 @@ kubectl apply -R -f k8s/
 # Verificar
 kubectl -n fcg get pods
 ```
+
+> ⚠️ **Este caminho manual tem uma armadilha, e é a razão de o script existir.** Se a tag
+> `<servico>:local` **já existir** no nó com um container a referenciando, o `minikube image load`
+> acima é um **no-op silencioso**: sai 0, não imprime nada, e o pod continua servindo o binário
+> antigo. Nem `rollout restart` resolve — o spec não mudou, então não há o que rolar. Use
+> `./scripts/deploy-minikube.sh`, que marca cada imagem pelo commit de origem e torna a colisão
+> impossível. Para diagnosticar um cluster já nessa situação: `./scripts/verify-fase3.sh` compara o
+> `imageID` do pod com o `Id` do host e acusa a divergência (issue #40).
 
 Acessar os serviços:
 
@@ -523,13 +624,29 @@ escolha aqui**. Optamos pela **Opção A**, por três motivos:
 |---|---|---|
 | **Prometheus** | raspa `/metrics` dos pods e armazena as séries (retenção 6h) | `kubectl -n fcg port-forward svc/prometheus 9090:9090` |
 | **Grafana** | dashboard de latência, throughput e erros | `kubectl -n fcg port-forward svc/grafana 3000:3000` — admin/admin |
-| **Jaeger** | recebe traces OTLP e mostra o trace distribuído | `kubectl -n fcg port-forward svc/jaeger 16686:16686` |
+| **Jaeger** | recebe traces OTLP — cobertura **parcial**, ver a ressalva abaixo | `kubectl -n fcg port-forward svc/jaeger 16686:16686` |
 
-> **Por que Jaeger, se a Opção A só exige métricas?** O MassTransit 8 propaga contexto de trace W3C
-> nativamente entre publisher e consumer. Com o exportador OTLP ligado nos serviços, o trace do
-> fluxo **"Compra de Jogo"** atravessa `catalog-api → RabbitMQ → payments-api → RabbitMQ →
-> catalog-api` sem código adicional. Cobrir o terceiro pilar da observabilidade sai quase de graça,
-> e é entregável que o desafio só pede na Opção B.
+> **Por que Jaeger, se a Opção A só exige métricas?** Para cobrir o terceiro pilar da
+> observabilidade, que o desafio só pede na Opção B. O `users-api` e o `catalog-api` instrumentam com
+> OpenTelemetry e registram `AddSource("MassTransit")`, o que amarra os spans de publicação do outbox
+> ao span HTTP que os originou.
+>
+> ⚠️ **A cobertura é PARCIAL, e não há trace distribuído entre serviços. Medido, não estimado.**
+> `GET /api/services` no Jaeger devolve apenas `catalog-api` e `users-api`: o `payments-api` e a
+> `notifications-function` **não têm nenhum pacote OpenTelemetry**, embora os manifestos definam
+> `OTEL_SERVICE_NAME` e `OTEL_EXPORTER_OTLP_ENDPOINT` para os dois — configuração para um SDK que não
+> está lá. Consultando os 10 traces mais recentes de cada serviço instrumentado, **0 de 10** contêm
+> mais de um serviço:
+>
+> ```
+> 108ab43a6b39  spans=4  [catalog-api]  POST api/v1/biblioteca · outbox send · OrderPlacedEvent send
+> 162cda3b474c  spans=2  [catalog-api]  catalog-payment-processed receive · process   <-- trace SEPARADO
+> ```
+>
+> A cadeia da compra é `catalog-api → RabbitMQ → payments-api → RabbitMQ → catalog-api`, e o elo do
+> meio não continua nem propaga o contexto — então ela se parte em dois traces órfãos. Rastreado em
+> [payments-api#20](https://github.com/fcg-grupo-16/payments-api/issues/20). O que existe hoje, e é
+> demonstrável, é o trace **por serviço**, incluindo os spans do outbox.
 
 ### Como os serviços são descobertos
 
@@ -895,7 +1012,20 @@ docker push ghcr.io/fcg-grupo-16/<servico>:v1.0.0
 kubectl set image deploy/<servico> <servico>=ghcr.io/fcg-grupo-16/<servico>:v1.0.0 -n fcg
 ```
 
-Para o desenvolvimento local com minikube continuamos usando a tag `:local` (build + `minikube image load`), como descrito acima. A pipeline de build/push para o GHCR em cada tag pode ser adicionada como workflow (`release.yml`) em cada repo — está mapeada como melhoria nas issues.
+No desenvolvimento local com minikube as imagens são marcadas pelo **commit do repositório de
+origem** (`users-api:5f78b28`), não por uma tag móvel. O `deploy-minikube.sh` calcula a tag, builda,
+carrega no nó e aplica os manifestos numa **cópia renderizada** com essas tags — os arquivos de `k8s/`
+permanecem com `:local` para continuarem sendo YAML puro, validável offline pelo CI.
+
+> **Por que não a tag móvel.** Quando `<servico>:local` já existe no nó e um container a referencia,
+> `minikube image load` vira **no-op silencioso** (sai 0, sem mensagem) e `minikube image rm` recusa
+> sem `--force`. O pod segue `Running` servindo o binário **antigo**, e `kubectl get` não acusa nada:
+> foi assim que métricas, avaliações e cache ficaram invisíveis no cluster (issue #40). Com tag nova a
+> cada commit a colisão é impossível, e trocar de commit muda o `image:` do spec, disparando o rollout
+> naturalmente — ao contrário de `rollout restart`, que **não resolve** quando o spec não muda.
+
+A pipeline de build/push para o GHCR em cada tag pode ser adicionada como workflow (`release.yml`) em
+cada repo — está mapeada como melhoria nas issues.
 
 ## Repositórios do grupo
 
