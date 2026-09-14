@@ -20,13 +20,13 @@ scrape_configs:
   - job_name: fcg-pods
     static_configs:
       - targets: ["users-api:8080"]
-        labels: { service: users-api }
+        labels: {service: users-api}
       - targets: ["catalog-api:8080"]
-        labels: { service: catalog-api }
+        labels: {service: catalog-api}
       - targets: ["payments-api:8080"]
-        labels: { service: payments-api }
+        labels: {service: payments-api}
 
   - job_name: prometheus
     static_configs:
       - targets: ["localhost:9090"]
-        labels: { service: prometheus }
+        labels: {service: prometheus}

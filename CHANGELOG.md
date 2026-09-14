@@ -5,6 +5,27 @@ Todas as mudanças relevantes deste repositório de orquestração são document
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/)
 e o versionamento adere a [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [0.23.0] - 2026-09-14
+
+### Corrigido
+- **O `yamllint` do CI dizia "✓" sem olhar `docker/`.** O escopo do passo era
+  `k8s/ gateway/ docker-compose.yml .github/`, e o diretório que ficava de fora tinha **8 erros
+  reais** contra a mesma `.yamllint` versionada — todos em `docker/prometheus/prometheus.yml`
+  (`too many spaces inside braces`, nos mapeamentos de fluxo `labels: { service: ... }`).
+
+  Pior que não ter lint é **parecer** ter: o passo saía verde e o leitor concluía que todo o YAML do
+  repositório havia sido verificado. O `docker/` não é acessório — guarda o `prometheus.yml` que
+  define os alvos da coleta, o provisionamento do Grafana e as definições do broker.
+
+  Os 8 achados foram corrigidos e o escopo passou a cobrir **todo o YAML rastreado** (24 arquivos,
+  nenhum de fora — conferido). A correção é puramente cosmética: a estrutura carregada do
+  `prometheus.yml` tem o **mesmo hash** antes e depois, e o `promtool check config` aceita o
+  arquivo novo.
+
+  Regra registrada no próprio passo: se algum diretório precisar ficar fora, a exclusão vai no
+  `.yamllint` **com o motivo escrito**, nunca implícita na linha de comando — que era o que tornava
+  esta lacuna invisível. Fecha #48.
+
 ## [0.22.0] - 2026-09-14
 
 ### Modificado

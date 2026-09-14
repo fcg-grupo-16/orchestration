@@ -132,11 +132,16 @@ jobs:
             --namespace kong -f gateway/kong-values.yaml > /dev/null
           echo "gateway/kong-values.yaml renderiza sem erro no chart $KONG_CHART_VERSION"
 
-      # 7) yamllint, agora BLOQUEANTE. Antes rodava com `-d relaxed` + continue-on-error: acusava
-      #    441 achados e saía 0 — não era gate, era ruído. A config versionada em .yamllint desliga
-      #    `line-length` (os comentários longos dos manifestos são deliberados) e promove o resto a
-      #    erro. Nesta base o resultado é limpo.
+      # 7) yamllint, BLOQUEANTE. Antes rodava com `-d relaxed` + continue-on-error: acusava 441
+      #    achados e saía 0 — não era gate, era ruído. A config versionada em .yamllint desliga
+      #    `line-length` (os comentários longos dos manifestos são deliberados) e promove o resto a erro.
+      #
+      #    O ESCOPO COBRE TODO O YAML DO REPOSITÓRIO. Antes deixava `docker/` de fora, e lá havia 8
+      #    erros reais contra esta mesma config — invisíveis, porque o passo dizia "yamllint ✓" e o
+      #    leitor concluía que tudo fora verificado. Pior que não ter lint é parecer ter (issue #48).
+      #    Se um diretório precisar ficar de fora, a exclusão vai no .yamllint COM o motivo escrito,
+      #    nunca implícita na linha de comando.
       - name: yamllint
         run: |
           pipx install yamllint || pip install yamllint
-          yamllint -c .yamllint k8s/ gateway/ docker-compose.yml .github/
+          yamllint -c .yamllint k8s/ gateway/ docker/ docker-compose.yml .github/
