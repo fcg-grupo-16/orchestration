@@ -16,8 +16,22 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 # do Kong ausente (alguém já desinstalou o gateway à mão). Qualquer outro erro aborta.
 echo "==> Removendo os manifestos (namespace fcg + gateway)"
 if ! ERRO=$(kubectl delete -R -f "$ROOT_DIR/k8s/" --ignore-not-found 2>&1); then
-  if echo "$ERRO" | grep -q "no matches for kind"; then
-    echo "   aviso: CRDs do Kong ausentes (gateway já removido) — seguindo"
+  # ⚠️ DUAS falhas abertas já corrigidas aqui, ambas medidas em isolamento:
+  #   1) `grep -q` sozinho tolerava saída MISTA — uma linha "no matches for kind" mais um erro real
+  #      (RBAC, admissão) e o script engolia o segundo, imprimindo sucesso com exit 0;
+  #   2) exigir apenas que "nenhuma linha ^error deixe de casar a frase" tolerava o que NÃO tem linha
+  #      começando por error/Error na coluna 0: saída VAZIA, `  Error from server` indentado, e
+  #      "The connection to the server ... was refused". Nesses casos o script imprimia o aviso
+  #      enganoso de "CRDs ausentes" e seguia derrubando a plataforma com exit 0.
+  # Agora exige as duas coisas: a frase tolerável PRESENTE, e nenhuma linha de erro fora dela.
+  TOLERAVEL="no matches for kind"
+  # Formas de erro que o kubectl usa, incluindo indentadas e a de conexão. `E0913 ...` é klog e não
+  # indica falha do delete, por isso fica fora da contagem.
+  LINHAS_ERRO=$(echo "$ERRO" | grep -E '([Ee]rror|unable to recognize|The connection to the server)' \
+                  | grep -vE '^E[0-9]{4} ' || true)   # `|| true`: grep sem match sai 1 e mataria o if
+  FORA=$(printf '%s\n' "$LINHAS_ERRO" | grep -v "$TOLERAVEL" | grep -c . || true)
+  if echo "$ERRO" | grep -q "$TOLERAVEL" && [ "${FORA:-0}" -eq 0 ]; then
+    echo "   aviso: CRDs do Kong ou do KEDA ausentes (já removidos à mão) — seguindo"
     echo "$ERRO" | grep -v "no matches for kind" || true
   else
     echo "$ERRO" >&2
@@ -75,7 +89,12 @@ fi
 # usam a MESMA lista. Enumerar só um grupo fazia o delete (que casava `konghq.com$`) ter escopo MAIOR
 # que o guard — e, ao alinhá-los pelo grupo fixo, um grupo novo trazido por upgrade do KIC passaria a
 # ser ignorado em silêncio nos dois.
-KINDS=$(kubectl api-resources -o name 2>/dev/null | grep 'konghq\.com$' | tr '\n' ',' | sed 's/,$//')
+# ⚠️ QUINTA instancia do mesmo fail-open, e a mais ironica: sem `|| true`, um cluster SEM os CRDs do
+# Kong faz o `grep` sair 1, o pipefail propagar e o `set -e` MATAR o script aqui — o `if [ -z "$KINDS" ]`
+# logo abaixo, que existe exatamente para esse cenario, nunca roda. O guard "fail-closed" que eu
+# construi em duas rodadas era inalcancavel no unico caso em que importava.
+# Medido: sem `|| true`, exit 1 e nenhuma saida; com ele, o ramo PRESERVAR e alcancado.
+KINDS=$(kubectl api-resources -o name 2>/dev/null | grep 'konghq\.com$' | tr '\n' ',' | sed 's/,$//' || true)
 if [ -n "$KINDS" ]; then
   # NOTA: KongClusterPlugin, KongVault e KongLicense são CLUSTER-SCOPED e saem sem coluna de
   # namespace, então `$1!="fcg"` os conta como "fora de fcg". Isso falha FECHADO (preserva os CRDs),
@@ -107,4 +126,49 @@ else
 (${CRS_FORA:-?})}"
 fi
 
-echo "Recursos FCG e gateway removidos."
+# --- KEDA: o deploy instala, o undeploy remove (mesma simetria exigida do Kong) ---
+#
+# Sem este bloco sobravam o namespace `keda`, os três deployments (operator, metrics-apiserver,
+# admission), o webhook de admissão, o apiservice de external metrics e os seis CRDs `keda.sh` —
+# enquanto o `k8s/50-keda-notifications.yaml` saía junto dos manifestos acima. Resultado: um
+# operador de pé sem nada para reconciliar.
+#
+# A ORDEM já está garantida: os CRs (ScaledObject/TriggerAuthentication) vivem em `k8s/` e são
+# removidos no primeiro passo deste script, antes dos CRDs saírem aqui.
+#
+# ⚠️ A versão TEM de casar com a do deploy-minikube.sh — a remoção é `delete` da MESMA URL pinada.
+KEDA_VERSION="2.20.2"
+
+# Guard análogo ao dos CRDs do Kong, e fail-CLOSED pelo mesmo motivo: o manifesto do release inclui
+# os CRDs, que são cluster-scoped. Removê-los levaria em cascata os ScaledObject de QUALQUER outro
+# time no cluster. Se a sonda não conseguir se pronunciar, preservamos.
+PRESERVAR_KEDA=""
+# Mesmo caso do KINDS acima: sem `|| true`, cluster sem CRDs do KEDA mata o script antes do
+# `if [ -z "$KEDA_KINDS" ]`.
+KEDA_KINDS=$(kubectl api-resources -o name 2>/dev/null | grep 'keda\.sh$' | tr '\n' ',' | sed 's/,$//' || true)
+if [ -z "$KEDA_KINDS" ]; then
+  PRESERVAR_KEDA="nenhum CRD keda.sh no cluster (KEDA já removido, ou nunca instalado)"
+elif KEDA_OUT=$(kubectl get "$KEDA_KINDS" -A --no-headers 2>/dev/null); then
+  # `$1!="fcg"` também conta CRs cluster-scoped (que saem sem coluna de namespace) — falha fechado.
+  KEDA_FORA=$(printf '%s\n' "$KEDA_OUT" | awk 'NF && $1!="fcg"' | wc -l | tr -d ' ')
+else
+  PRESERVAR_KEDA="não foi possível listar os CRs do KEDA"
+fi
+
+if [ -z "$PRESERVAR_KEDA" ] && [ "${KEDA_FORA:-0}" -eq 0 ]; then
+  echo "==> Removendo o KEDA v$KEDA_VERSION"
+  kubectl delete --ignore-not-found \
+    -f "https://github.com/kedacore/keda/releases/download/v${KEDA_VERSION}/keda-${KEDA_VERSION}.yaml"
+else
+  echo "==> CRDs do KEDA PRESERVADOS: ${PRESERVAR_KEDA:-há CRs do KEDA fora de fcg (${KEDA_FORA:-?})}"
+  # Preservar os CRDs é o certo (são cluster-scoped), mas o RESTO do release não é compartilhado:
+  # namespace, deployments, webhook e apiservice são nossos. Sem isto, um cluster onde alguém já
+  # apagou os CRDs à mão ficava com o operador de pé para sempre — assimetria que este bloco existe
+  # para evitar.
+  echo "    removendo o resto do release (namespace, webhook, apiservice), mantendo os CRDs"
+  kubectl delete validatingwebhookconfiguration keda-admission --ignore-not-found
+  kubectl delete apiservice v1beta1.external.metrics.k8s.io --ignore-not-found
+  kubectl delete namespace keda --ignore-not-found
+fi
+
+echo "Recursos FCG, gateway e KEDA removidos."

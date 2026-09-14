@@ -7,7 +7,16 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 PARENT_DIR="$(cd "$ROOT_DIR/.." && pwd)"
-SERVICES=(users-api catalog-api payments-api notifications-api)
+# notifications-api foi DEPRECADO na Fase 3 (#29), substituído pela notifications-function abaixo.
+SERVICES=(users-api catalog-api payments-api)
+# A notifications-function NÃO entra em SERVICES: o build dela precisa de `--platform linux/amd64`.
+# Medido nesta máquina (host arm64, nó do minikube arm64): a base oficial
+# `azure-functions/dotnet-isolated` publica SÓ linux/amd64 — conferido em 4-dotnet-isolated8.0,
+# 9.0, 10.0, -appservice e -mariner; não existe variante arm64 em tag nenhuma. Sem `--platform` o
+# build falha com `no match for platform in manifest`. A imagem amd64 EXECUTA no nó arm64 porque o
+# minikube traz binfmt com handler `qemu-x86_64` habilitado (verificado: pod de teste imprimiu
+# `x86_64` e saiu com 0). Custo: partida emulada, mais lenta que os demais serviços.
+FUNCTIONS=(notifications-function)
 
 # Pré-requisito NOVO desta fase: o Kong 3.x só é distribuído por Helm. Checado ANTES de qualquer
 # mutação no cluster — sem isto, o script já teria aplicado o controller de Sealed Secrets e só
@@ -41,6 +50,7 @@ kubectl -n kube-system rollout status deploy/sealed-secrets-controller --timeout
 #
 # Versão do chart PINADA (nunca latest) para reprodutibilidade. O Kong 3.x só é distribuído por
 # Helm — o antigo all-in-one-dbless.yaml foi descontinuado pelo projeto.
+KEDA_VERSION="2.20.2"
 KONG_CHART_VERSION="3.4.1"
 echo "==> Instalando/atualizando o Kong Ingress Controller (chart $KONG_CHART_VERSION)"
 helm repo add kong https://charts.konghq.com >/dev/null 2>&1 || true
@@ -53,6 +63,31 @@ helm upgrade --install kong kong/kong \
   --wait --timeout 300s
 kubectl -n kong rollout status deploy/kong-kong --timeout=300s
 
+# --- KEDA (autoscaler orientado a eventos, Fase 3 / #29) ---
+#
+# Instalado por URL PINADA, seguindo o precedente do controller do Sealed Secrets neste mesmo
+# script. NÃO versionamos o YAML em k8s/vendor/: ele entraria no `kubeconform -strict k8s/` do CI e
+# no `kubectl apply -R -f k8s/` daqui — mesma razão que mantém gateway/kong-values.yaml e o
+# dashboard do Grafana FORA de k8s/.
+#
+# `--server-side` é obrigatório: o apply clássico falha com `metadata.annotations: Too long` em
+# manifestos com CRDs grandes como este.
+#
+# Vem ANTES do `kubectl apply` porque o ScaledObject de k8s/50-keda-notifications.yaml depende dos
+# CRDs keda.sh.
+echo "==> Garantindo o KEDA v$KEDA_VERSION"
+kubectl apply --server-side \
+  -f "https://github.com/kedacore/keda/releases/download/v${KEDA_VERSION}/keda-${KEDA_VERSION}.yaml"
+# Nomes CONFERIDOS na v2.20.2 instalada: keda-operator, keda-metrics-apiserver e keda-admission.
+# O passo a passo da issue #29 citava `keda-operator-metrics-apiserver`, que NÃO existe nesta versão
+# (medido: `Error from server (NotFound)`).
+for d in keda-operator keda-metrics-apiserver keda-admission; do
+  kubectl -n keda rollout status "deploy/$d" --timeout=180s
+done
+# O HPA gerenciado pelo KEDA só funciona com este apiservice disponível.
+kubectl wait --for=condition=Available --timeout=120s \
+  apiservice/v1beta1.external.metrics.k8s.io
+
 echo "==> Build das imagens locais (:local)"
 # RabbitMQ custom (base oficial + plugin rabbitmq_delayed_message_exchange).
 echo "   - fcg-rabbitmq"
@@ -62,10 +97,18 @@ for svc in "${SERVICES[@]}"; do
   docker build -t "${svc}:local" "$PARENT_DIR/${svc}"
 done
 
+for fn in "${FUNCTIONS[@]}"; do
+  echo "   - $fn (linux/amd64: a base do Azure Functions não publica arm64)"
+  docker build --platform linux/amd64 -t "${fn}:local" "$PARENT_DIR/${fn}"
+done
+
 echo "==> Carregando imagens no minikube"
 minikube image load "fcg-rabbitmq:local"
 for svc in "${SERVICES[@]}"; do
   minikube image load "${svc}:local"
+done
+for fn in "${FUNCTIONS[@]}"; do
+  minikube image load "${fn}:local"
 done
 
 echo "==> Migração Deployment→StatefulSet do MongoDB (kinds diferentes; no-op em cluster limpo)"
@@ -80,6 +123,22 @@ kubectl -n fcg delete deployment mongodb --ignore-not-found
 echo "==> Removendo o Ingress NGINX legado (substituído pelo Kong)"
 kubectl -n fcg delete ingress fcg-ingress --ignore-not-found
 
+# Fase 3 (#29): o notifications-api foi SUBSTITUÍDO pela notifications-function. Apagar
+# k8s/23-notifications-api.yaml do git NÃO basta, pela mesma razão do Ingress acima — e aqui a
+# consequência é pior: num cluster que já rodou a main, o Deployment legado continua de pé, a
+# imagem notifications-api:local continua carregada no minikube e o Secret continua resolvendo o
+# envFrom dele. Resultado: ele e a Function viram COMPETING CONSUMERS das mesmas duas filas, cada
+# e-mail sai por um dos dois de forma imprevisível, e o teste de aceite do KEDA fica não-determinístico.
+# Bônus: o pod legado tem prometheus.io/scrape "true" e o Prometheus do cluster descobre por
+# annotation de pod, então o target obsoleto reaparece.
+# No-op em cluster limpo, como as duas limpezas acima.
+echo "==> Removendo o notifications-api legado (substituído pela Function serverless)"
+kubectl -n fcg delete deployment notifications-api --ignore-not-found
+kubectl -n fcg delete service notifications-api --ignore-not-found
+kubectl -n fcg delete configmap notifications-api-config --ignore-not-found
+kubectl -n fcg delete sealedsecret notifications-api-secret --ignore-not-found
+kubectl -n fcg delete secret notifications-api-secret --ignore-not-found
+
 echo "==> Aplicando manifestos (kubectl apply -R -f k8s/)"
 kubectl apply -R -f "$ROOT_DIR/k8s/"
 
@@ -92,6 +151,9 @@ kubectl -n fcg rollout status deploy/redis --timeout=180s
 for svc in "${SERVICES[@]}"; do
   kubectl -n fcg rollout status "deploy/${svc}" --timeout=180s
 done
+# FUNCTIONS NÃO entram neste laço de propósito: o KEDA mantém a notifications-function em ZERO
+# réplica enquanto as filas estão vazias, e `kubectl rollout status` num Deployment de 0 réplica não
+# é sinal útil de saúde. Quem valida a Function é o ciclo 0->1->0 (ver README, issue #29).
 
 # Observabilidade (issue #27) — DEPOIS dos serviços e NÃO-FATAL, de propósito.
 # Nenhum initContainer espera por eles, então nada da plataforma depende do rollout.

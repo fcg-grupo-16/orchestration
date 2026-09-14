@@ -5,6 +5,127 @@ Todas as mudanças relevantes deste repositório de orquestração são document
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/)
 e o versionamento adere a [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [0.15.0] - 2026-09-13
+
+### Adicionado
+- **KEDA 2.20.2 e scale-to-zero da `notifications-function`**, fechando o requisito de *Migração para
+  Arquitetura Serverless*: o Deployment fica em **zero réplica** em repouso e o KEDA o acorda quando
+  entra mensagem na fila, devolvendo-o a zero quando ela esvazia. Medido no cluster em **duas
+  execuções**, e os números variam de propósito — não são especificação: o pod nasceu **6s** e **11s**
+  depois do evento (limite superior é o `pollingInterval: 15`, somado à partida emulada da imagem
+  amd64), `Executed 'Functions.UserCreatedFunction' (Succeeded, Duration=3080ms)`, fila drenada, e
+  voltou a 0 réplica **63s** e **71s** depois do disparo (`cooldownPeriod: 60`). (#29)
+- `k8s/50-keda-notifications.yaml`: `TriggerAuthentication` + `ScaledObject` com **dois** triggers
+  (uma fila cada; o KEDA escala pelo maior). (#29)
+- `k8s/24-notifications-function.yaml`: Deployment e ConfigMap da Function, **cópia** de
+  `deploy/k8s/` do repo `notifications-function` — o `kubectl apply -R -f k8s/` daqui nunca aplica o
+  diretório do outro repo, então sem a cópia o `ScaledObject` apontaria para um alvo inexistente.
+  Deployment **sem `replicas`** de propósito: quem controla a contagem é o KEDA. (#29)
+- **`scripts/keda-test.sh`**: matriz de aceite do ciclo 0→1→0 contra o cluster. Existe pela mesma
+  razão do `gateway-test.sh`: o `kubeconform` do CI **pula** os CRs do KEDA (sem schema publicado),
+  e o engano de `Ready` é **temporal**, medido com `ScaledObject`s efêmeros em Deployments dedicados:
+  credencial → secret inexistente dá `Ready=False` (`ScaledObjectCheckFailed`) **estável** e sem HPA,
+  caso que a asserção 1 **pega**; já credencial boa com `queueName` inexistente dá **`Ready=True`** com
+  HPA criado em t+6s e t+12s, caindo para `Ready=False` (`TriggerError`) em t+18s. Ou seja, ler `Ready`
+  **antes do primeiro poll do trigger** aprova um scaler que não alcança a fila. Nos dois casos o
+  Deployment fica em 0 réplica, indistinguível de scale-to-zero saudável, e a asserção decisiva é a de
+  **execução** (`Executed ... Succeeded`). São 12 asserções, e o script limpa o que cria nas três
+  coleções que toca. (#29)
+- **As asserções do `keda-test.sh` são mutation-testadas, e a mutação precisa quebrar os DOIS
+  triggers.** Trocando o `queueName` de **ambos** por filas inexistentes, o teste **reprova**:
+  asserções 1, 8, 9 e 10 falham e o exit é 1. A 8 é a decisiva — ela dizia `sim` contando o pod
+  moribundo do ciclo anterior, e agora diz `nao`. Restaurado, volta a 12/12. Um teste que só passa
+  não prova nada; este também reprova quando deve.
+  ⚠️ **Quebrar só o primeiro trigger NÃO é um controle confiável**, e isso foi medido: duas execuções
+  da mesma mutação de um trigger deram resultados diferentes — uma com 1, 8, 9 e 10 reprovando, outra
+  com apenas a 1, e o pod acordando em 46s. Com o segundo trigger intacto o KEDA ainda tem um scaler
+  saudável, então a escala pode acontecer assim mesmo. Só a mutação dos dois é determinística. (#29)
+- Credencial selada `keda-rabbitmq-secret` para o scaler, com **FQDN**. (#29)
+
+### Modificado
+- `scripts/deploy-minikube.sh`: instala o KEDA por **URL pinada** antes do `kubectl apply` (o
+  `ScaledObject` depende dos CRDs), builda a Function com **`--platform linux/amd64`** num laço
+  `FUNCTIONS` separado do de `SERVICES`, e **remove o `notifications-api` legado**. Esta última parte
+  era um defeito: apagar `k8s/23-notifications-api.yaml` do git não remove nada de um cluster que já
+  rodou a `main` — o Deployment legado voltaria de pé (a imagem segue carregada no minikube, o Secret
+  resolve o `envFrom`) e ele e a Function virariam *competing consumers* das mesmas filas, tornando o
+  teste de aceite não-determinístico. Mesma razão da limpeza do `fcg-ingress`, que o comentário três
+  linhas acima já enunciava. (#29)
+- `.github/workflows/ci.yml`: a lacuna conhecida do `kubeconform` passou a citar também os CRs do
+  KEDA (`ScaledObject`/`TriggerAuthentication`), não só os do Kong. (#29)
+- `docker/rabbitmq/README.md`: a prosa escrita antevendo esta remoção foi para o passado. A decisão
+  de dead-letter **por policy** e o exchange intermediário seguem valendo — só mudou o sujeito: quem
+  sofreria com divergência de equivalência agora são os **publishers** (`users-api`, `payments-api`
+  via MassTransit), não o serviço removido. (#29)
+
+### Removido
+- **`notifications-api`** da plataforma: manifesto `k8s/23-notifications-api.yaml`, serviço do
+  `docker-compose.yml`, target do Prometheus do compose, `SERVICES` do deploy, secret selado e dica
+  de logs do smoke test. O repositório continua existindo, marcado como **deprecado** no README. As
+  entradas históricas do CHANGELOG **não** foram reescritas. (#29)
+
+### Notas de implementação
+- **A imagem da Function exige `--platform linux/amd64`.** A base oficial
+  `azure-functions/dotnet-isolated` publica **só** `linux/amd64` — conferido em `4-dotnet-isolated8.0`,
+  `9.0`, `10.0`, `-appservice` e `-mariner`; não existe variante arm64 em tag nenhuma. Sem
+  `--platform` o build falha com `no match for platform in manifest`. A imagem amd64 **executa** no
+  nó arm64 porque o minikube traz `binfmt` com handler `qemu-x86_64` habilitado (verificado: pod de
+  teste imprimiu `x86_64` e saiu com 0). Custo: partida emulada, mais lenta que os demais serviços —
+  que são todos arm64 nativos (`dotnet/sdk:10.0` é multi-arch).
+- **A credencial do scaler precisa de FQDN, e não é a mesma entrada dos serviços.** Reaproveitar
+  `notifications-function-secret.RabbitMqConnection` falhou: o pod do **operador** do KEDA roda no
+  namespace `keda`, onde o nome curto não resolve — `dial tcp: lookup rabbitmq on 10.96.0.10:53: no
+  such host`. Confirmado por DNS: de `fcg` o nome curto resolve; de `keda` é `NXDOMAIN` e só o FQDN
+  responde. Os dois segredos carregam o **mesmo** usuário e senha, e diferem apenas no host.
+- **Trocar só o `TriggerAuthentication` não reconstrói o scaler.** O `kubectl apply` responde
+  `scaledobject ... unchanged` e o operador segue com o scaler em cache, repetindo o erro antigo (5
+  erros citando o host velho nos 90s seguintes à correção do secret). É preciso recriar o
+  `ScaledObject`.
+- **O HPA criado pelo KEDA aparece com `minReplicas: 1`, e está correto.** O HPA do Kubernetes não
+  escala a zero; a transição 0↔1 é do operador do KEDA, por fora dele. Em repouso, `ScalingActive=False`
+  com *"scaling is disabled since the replica count of the target is zero"* é o estado normal.
+- **Com `AzureWebJobsStorage` vazio o host do Functions reporta `Unhealthy` para sempre**, e não é
+  falha: medido, `azure.functions.webjobs.storage` é a **única** sub-checagem não saudável
+  (`web_host.lifecycle` e `script_host.lifecycle` = `Healthy`), e a função executa normalmente.
+  Configurar um Storage Account só para silenciar o log seria pagar uma dependência por um sintoma.
+- **No compose, as filas de notificação ficaram sem consumidor.** A `notifications-function` não
+  está no `docker-compose.yml` (scale-to-zero exige KEDA, que só existe no minikube), então desde
+  esta remoção `notifications-user-created` e `notifications-payment-processed` **acumulam** mensagens
+  no caminho do compose — as filas existem, pois o `definitions.json` está assado na imagem do broker.
+  Nada quebra, mas não há e-mail simulado para ver localmente: o fluxo de notificação só é observável
+  no cluster. Registrado no cabeçalho do `smoke-test.sh` e no README.
+- **O endpoint HTTP de histórico ficou inalcançável.** A Function tem **três** funções — duas com
+  `RabbitMQTrigger` e a `NotificationHistoryFunction` com **HTTP** (confirmado no `functions.metadata`
+  da imagem). O `notifications-api` servia `GET /api/v1/notificacoes` atrás de um Service; o
+  `k8s/24-notifications-function.yaml` não declara `containerPort` nem Service, e o scale-to-zero
+  mantém 0 réplica. Não corrigido aqui: expor exigiria Service + pod quente (anulando o
+  scale-to-zero) ou ativação por HTTP, além de tratar a `x-functions-key`.
+- **Duas afirmações minhas sobre o próprio teste eram falsas, e a origem do erro importa.** (a) Eu
+  descrevi o modo de falha do scaler com as duas causas **invertidas** — transcrevi a medição de uma
+  revisão adversarial **sem reproduzi-la**, e a reprodução própria mostrou o contrário (ver a nota
+  acima). (b) Eu declarei que o `keda-test.sh` passava 12/12 "na condição que o quebrou"; não passava:
+  o meu re-run tinha um `sleep 75` no meio (para a leitura atrasada do Mongo) e o
+  `terminationGracePeriodSeconds` é **30s**, então o estado já estava genuinamente ocioso e a condição
+  tight nunca foi exercida. O defeito que isso escondia era real: `pods_vivos()` filtrava
+  `Terminating`, de modo que um pod ainda vivo — com consumer AMQP atado, drenando a mensagem —
+  contava como zero, e a asserção 8 reportava "o KEDA acordou a Function" olhando o pod do ciclo
+  anterior. Corrigido com `pods_totais()` na espera de ocioso e exigindo pod de **nome diferente** na
+  asserção 8.
+- **Correções de afirmações desta própria entrega**, encontradas em revisão adversarial e registradas
+  por honestidade: (a) "resíduo zero no Mongo" era **falso** — media só `usersdb`, enquanto a Function
+  persiste toda notificação em `notificationsdb.notifications`; 14 documentos de teste haviam
+  acumulado (12 do `gateway-test.sh`, 2 do `keda-test.sh`) e os dois scripts passaram a limpá-la;
+  (b) "7 → 6 SealedSecrets" estava errado — `origin/main` já tinha **6** e HEAD tem **6** (o número 7
+  foi um estado transitório da sessão, não do diff); (c) "diff do CHANGELOG +67 −0" estava errado —
+  o commit `5858a22` traz **+71 −0** (o total da PR é alvo móvel: muda a cada commit, então citar
+  o número da PR numa entrada versionada seria errar de novo); (d) "7 entradas no
+  `definitions.json`" estava errado — o arquivo declara **3 filas**, mais 5 exchanges, 5 bindings
+  e 1 policy.
+- **Ordem da remoção importou.** O `notifications-api` só saiu depois de a Function ter
+  comprovadamente consumido um evento real. Com os dois de pé eles são *competing consumers* da mesma
+  fila e cada e-mail sai por um dos dois de forma imprevisível — durante a validação isto apareceu de
+  fato (`consumers 2` por fila), e a medição só ficou limpa depois de zerar o `notifications-api`.
+
 ## [0.14.0] - 2026-09-13
 
 ### Adicionado

@@ -63,8 +63,11 @@ Foi capturado do broker com `rabbitmqadmin export`, não escrito de memória. Is
 parece redundante — um binding direto do exchange de tipo para a fila funcionaria igual.
 
 Não simplifique. As propriedades de um exchange/fila participam da checagem de equivalência do
-`declare` do AMQP: enquanto o `notifications-api` ainda existir, qualquer divergência faz o broker
-recusar o declare dele com `PRECONDITION_FAILED` e o serviço para de subir.
+`declare` do AMQP, e o `notifications-api` — removido em #29 — **não era o único** a declarar esta
+topologia: os PUBLISHERS (`users-api` e `payments-api`, via MassTransit) continuam declarando os
+exchanges no startup. Qualquer divergência faz o broker recusar o declare deles com
+`PRECONDITION_FAILED` e o serviço para de subir. O motivo para manter o exchange intermediário
+sobreviveu à remoção do consumidor; só mudou quem se machuca.
 
 **2. Dead-letter por POLICY, não por `x-dead-letter-exchange` nos `arguments` da fila.**
 
@@ -73,8 +76,8 @@ estava errado.
 
 Os `arguments` de uma fila **participam** da checagem de equivalência do `queue.declare`. O
 MassTransit declara estas filas **sem argumento nenhum**. Se o `definitions.json` as declarasse com
-`x-dead-letter-exchange`, o `notifications-api` passaria a morrer no startup durante toda a janela
-de transição — entre esta mudança e a remoção do serviço (issue #29). Verificado na prática:
+`x-dead-letter-exchange`, o `notifications-api` teria morrido no startup durante toda a janela de
+transição — janela que fechou com a remoção do serviço em #29. Verificado na prática, na época:
 
 ```
 PRECONDITION_FAILED - inequivalent arg 'x-dead-letter-exchange' for queue
@@ -83,8 +86,9 @@ PRECONDITION_FAILED - inequivalent arg 'x-dead-letter-exchange' for queue
 ```
 
 **Policies** são aplicadas pelo servidor **por fora** do declare: entregam o mesmo dead-lettering
-sem participar da equivalência. Com a policy, `arguments` continua `[]` e o `notifications-api`
-sobe normalmente:
+sem participar da equivalência. Com a policy, `arguments` continua `[]` e quem declara estas filas
+sobe normalmente. A decisão segue valendo depois de #29: o `RabbitMQTrigger` da Function não declara
+nada, mas os publishers declaram, e é a equivalência DELES que a policy preserva:
 
 ```bash
 $ docker compose exec rabbitmq rabbitmqctl list_queues name arguments policy

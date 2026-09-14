@@ -23,8 +23,12 @@ TMPD="$(mktemp -d)"
 # Marca o início da execução. O relógio vem do PRÓPRIO Mongo, não do host: `date -u` local com
 # milissegundos truncados abria uma janela de ~1s em que um refresh_token de terceiro, criado
 # imediatamente antes, seria apagado (medido: pod 0,087s à frente do host; com driver de VM o drift
-# pode ser bem maior). Fallback no host se o exec falhar — a janela volta, mas o teste não trava.
-INICIO="$(kubectl -n fcg exec mongodb-0 -- date -u +%Y-%m-%dT%H:%M:%S.%3NZ 2>/dev/null | tr -d '\r')"
+# pode ser bem maior). Fallback no host se o exec falhar.
+# ⚠️ `|| true` OBRIGATORIO: sob `set -euo pipefail`, o `pipefail` faz o pipeline `kubectl exec | tr`
+# propagar a falha para a atribuicao, e o `set -e` mata o script AQUI — sem imprimir nada. O fallback
+# abaixo seria, portanto, INALCANCAVEL sem ele. Medido: com pipefail, exit 1 e nenhuma saida;
+# sem pipefail, o fallback e alcancado.
+INICIO="$(kubectl -n fcg exec mongodb-0 -- date -u +%Y-%m-%dT%H:%M:%S.%3NZ 2>/dev/null | tr -d '\r' || true)"
 [ -n "$INICIO" ] || INICIO="$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"
 POD_A="rl-a-$$"; POD_B="rl-b-$$"
 # O --rm do `kubectl run` é client-side: um Ctrl-C deixaria os pods rodando e martelando o gateway,
@@ -49,6 +53,41 @@ cleanup() {
        if (a) { db.refresh_tokens.deleteMany({UsuarioId:a._id, CriadoEm:{\$gte:new Date('$INICIO')}}); }" \
       >/dev/null 2>&1 \
       || echo "  AVISO: nao consegui limpar o residuo de teste (${EMAIL})" >&2
+    # A notificacao de boas-vindas gravada pela Function tambem e residuo deste teste: o cadastro
+    # publica UserCreatedEvent e a Function persiste em notificationsdb.
+    #
+    # ⚠️ A escrita e ASSINCRONA, e com scale-to-zero o KEDA ainda precisa ACORDAR o pod: o documento
+    # costuma aparecer DEPOIS do fim das assercoes. A primeira versao deste delete rodava antes da
+    # escrita e nao apagava nada -- medido, um documento `gw-*` ficou orfao e a contagem "antes x
+    # depois" deu igual por coincidencia de tempo, escondendo o vazamento. Por isso a espera bounded.
+    # Só espera se a Function ESTIVER implantada: este script é da #26 e não a exige. Sem esta
+    # guarda, todo cluster sem o ScaledObject pagava o teto inteiro de espera por um documento que
+    # nunca viria.
+    NOTIF=0
+    # Guarda pelo DEPLOYMENT, nao pelo ScaledObject: sem KEDA o Deployment sobe com replicas: 1 e
+    # consome normalmente, entao chavear no ScaledObject pularia espera E aviso num cluster que de
+    # fato grava a notificacao.
+    if kubectl -n fcg get deploy notifications-function >/dev/null 2>&1; then
+      # Teto pelo RELÓGIO, não por número de iterações: a versão anterior somava 18 sleeps de 5s MAIS
+      # 18 `kubectl exec`, então o teto real passava bem dos 90s que a mensagem prometia.
+      LIMITE=$(( $(date +%s) + 90 ))
+      while [ "$(date +%s)" -lt "$LIMITE" ]; do
+        # `|| true` pela QUARTA vez nesta entrega, e aqui e a pior: dentro do trap EXIT. Sem ele o
+        # pipefail mata o TRAP nesta linha, o deleteMany abaixo nunca roda e o residuo vaza em
+        # SILENCIO -- sem nem o AVISO. E nao e hipotetico: o mongodb-0 reinicia por timeout de
+        # liveness neste cluster (ver issue #41); a contagem sobe, entao nao vale hardcodar numero.
+        NOTIF=$(kubectl -n fcg exec mongodb-0 -- mongosh --quiet notificationsdb --eval \
+          "print(db.notifications.countDocuments({Recipient:'$EMAIL'}))" 2>/dev/null | tr -d '[:space:]' || true)
+        if [ "${NOTIF:-0}" != "0" ]; then break; fi
+        sleep 5
+      done
+    fi
+    kubectl -n fcg exec mongodb-0 -- mongosh --quiet notificationsdb --eval \
+      "db.notifications.deleteMany({Recipient:'$EMAIL'});" >/dev/null 2>&1 \
+      || echo "  AVISO: nao consegui remover a notificacao de teste (${EMAIL})" >&2
+    if [ "${NOTIF:-0}" = "0" ] && kubectl -n fcg get deploy notifications-function >/dev/null 2>&1; then
+      echo "  AVISO: a notificacao de ${EMAIL} nao apareceu em 90s; pode ficar orfa em notificationsdb" >&2
+    fi
   fi
   rm -rf "$TMPD"
 }
@@ -72,13 +111,13 @@ check "2. token invalido -> 401" 401 "$(code -H 'Authorization: Bearer lixo' "$G
 
 # O 401 tem de vir do KONG, não do serviço — os dois devolvem 401 e confundi-los seria declarar
 # validação de borda inexistente.
-SRV=$(curl -si -H "$HOSTH" "$GW/api/v1/jogos" | tr -d '\r' | awk 'tolower($1)=="server:"{print $2}')
+SRV=$(curl -si -H "$HOSTH" "$GW/api/v1/jogos" | tr -d '\r' | awk 'tolower($1)=="server:"{print $2}' || true)
 case "$SRV" in kong/*) printf "  OK   %-46s %s\n" "3. o 401 vem do Kong" "$SRV";;
   *) printf "  FALHA %-45s server=%s (esperado kong/*)\n" "3. o 401 vem do Kong" "${SRV:-vazio}"; FALHAS=$((FALHAS+1));; esac
 
 printf '{"email":"admin@fcg.com","senha":"Admin@123456"}' > "$TMPD/login.json"
 TOKEN=$(curl -s -H "$HOSTH" -H 'Content-Type: application/json' --data-binary @"$TMPD/login.json" \
-  "$GW/api/v1/auth/login" | jq -r '.token // empty')
+  "$GW/api/v1/auth/login" | jq -r '.token // empty' || true)
 [ -n "$TOKEN" ] && printf "  OK   %-46s 200\n" "4. login publico -> token" \
   || { printf "  FALHA %-45s sem token\n" "4. login publico"; FALHAS=$((FALHAS+1)); }
 
@@ -121,7 +160,7 @@ RL=$(curl -si -H "$HOSTH" -H "Authorization: Bearer $TOKEN" "$GW/api/v1/jogos" |
 # (ConflitoDeDadosException) por execução, ainda que a resposta ao cliente seja 409 corretamente.
 printf '{"nome":"Dup","email":"admin@fcg.com","senha":"Teste@123456"}' > "$TMPD/dup.json"
 DUP=$(curl -si -H "$HOSTH" -H 'Content-Type: application/json' --data-binary @"$TMPD/dup.json" \
-  "$GW/api/v1/usuarios" | tr -d '\r')
+  "$GW/api/v1/usuarios" | tr -d '\r' || true)
 RLC=$(printf '%s\n' "$DUP" | awk '/^RateLimit-Limit:/{print $2; exit}')
 DUPST=$(printf '%s\n' "$DUP" | awk '/^HTTP/{print $2; exit}')
 check "9b. cadastro publico limitado a 20/min" 20 "${RLC:-vazio}"
@@ -129,7 +168,7 @@ check "9b. cadastro publico limitado a 20/min" 20 "${RLC:-vazio}"
 # conta que a limpeza NÃO remove (ela só apaga $EMAIL). Hoje o 409 depende do admin semeado.
 check "9b2. cadastro duplicado nao cria conta" 409 "${DUPST:-vazio}"
 RLP=$(curl -si -H "$HOSTH" -H 'Content-Type: application/json' --data-binary @"$TMPD/login.json" \
-  "$GW/api/v1/auth/login" | tr -d '\r' | awk '/^RateLimit-Limit:/{print $2; exit}')
+  "$GW/api/v1/auth/login" | tr -d '\r' | awk '/^RateLimit-Limit:/{print $2; exit}' || true)
 check "9c. login publico limitado a 20/min" 20 "${RLP:-vazio}"
 
 # ---- Teste de isolamento do rate limit: determinístico, dois IPs de origem ----
@@ -179,10 +218,10 @@ for P in "$POD_A" "$POD_B"; do
 done
 
 req() { kubectl -n fcg exec "$1" -- sh -c \
-  "curl -s -o /dev/null -w '%{http_code}' -H 'Host: api.fcg.local' -H \"Authorization: Bearer \$(cat /tmp/tk)\" $URL_INT" 2>/dev/null | tr -d '[:space:]'; }
+  "curl -s -o /dev/null -w '%{http_code}' -H 'Host: api.fcg.local' -H \"Authorization: Bearer \$(cat /tmp/tk)\" $URL_INT" 2>/dev/null | tr -d '[:space:]' || true; }
 
 A_COUNTS=$(kubectl -n fcg exec "$POD_A" -- sh -c \
-  "for i in \$(seq 1 140); do curl -s -o /dev/null -w '%{http_code}\n' -H 'Host: api.fcg.local' -H \"Authorization: Bearer \$(cat /tmp/tk)\" $URL_INT; done | sort | uniq -c" 2>/dev/null)
+  "for i in \$(seq 1 140); do curl -s -o /dev/null -w '%{http_code}\n' -H 'Host: api.fcg.local' -H \"Authorization: Bearer \$(cat /tmp/tk)\" $URL_INT; done | sort | uniq -c" 2>/dev/null || true)
 echo "$A_COUNTS" | sed 's/^/     pod A: /'
 
 A_OK=$(echo "$A_COUNTS" | awk '$2==200{print $1}'); A_OK=${A_OK:-0}
