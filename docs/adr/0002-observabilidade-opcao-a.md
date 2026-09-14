@@ -62,12 +62,18 @@ demonstrável ao vivo numa gravação de até 20 minutos.
   `down` para `up`: UP=4, DOWN=0) e uma métrica de negócio, `fcg_payment_decisions_total`, com
   labels `status` e `rule`.
 
-  ⚠️ **A cadeia do CADASTRO ainda NÃO fecha.** A `notifications-function` continua sem OpenTelemetry,
-  e os traces do `users-api` seguem em **0 de 10** multi-serviço: o `UserCreatedEvent` sai com
-  contexto e o contexto morre quando a Function o consome. Rastreado em
-  [notifications-function#14](https://github.com/fcg-grupo-16/notifications-function/issues/14).
-  Enquanto isso estiver aberto, a documentação afirma o trace distribuído **da compra**, não o de
-  toda a plataforma.
+  **A cadeia do CADASTRO fecha também, e a plataforma inteira passa a ter trace distribuído.** A
+  `notifications-function` lê o contexto W3C do header `MT-Activity-Id` do envelope do MassTransit e
+  abre um span `Consumer` filho dele — ela não usa MassTransit, consome pelo binding
+  `RabbitMQTrigger`, então a costura é explícita e não vem de um `AddSource`. Medido: trace
+  `177e2dcf8e7a` (5 spans, `users-api` + `notifications-function`) e trace
+  `ff866e2a4eb32ae4b59cdc2e9eabf008` (10 spans, `catalog-api` + `payments-api` +
+  `notifications-function`).
+
+  ⚠️ **Sobre a `notifications-function#14`:** ela descrevia a Function como sem OpenTelemetry, mas
+  foi aberta **depois** do merge do PR #13 daquele repositório, que já havia entregue a
+  instrumentação. A issue mediu um checkout desatualizado. O que de fato faltava era **deploy** — o
+  cluster servia uma imagem anterior ao PR.
 - O span do MongoDB não aparece: o driver 3.x exige o pacote
   `MongoDB.Driver.Core.Extensions.DiagnosticSources` para emitir activities, e sem ele um `AddSource`
   seria silenciosamente ignorado — o código registra isso para ninguém "consertar" com uma linha que

@@ -32,7 +32,7 @@ faltando Enter:
 | 1:30–5:00 | **1. Gateway** | `curl` sem token → **401 com `Server: kong/3.9.3`** (é o gateway, não o serviço); login → token; com token → 200; `?jwt=<token>` → **401** (não se aceita token por querystring); abrir `k8s/gateway/41-kong-plugins.yaml`; `./scripts/gateway-test.sh` → 17/17 |
 | 5:00–9:00 | **2. Serverless** | Terminal 3 mostrando **0/0 réplicas**; cadastrar usuário pelo gateway; o pod nascendo ao vivo; `kubectl logs` com `Executed 'Functions.UserCreatedFunction' (Succeeded)`; ~60s depois, **volta a zero**; abrir o `ScaledObject` e o `RabbitMQTrigger` |
 | 9:00–13:00 | **3. Observabilidade (Opção A)** | Dashboard do Grafana ao vivo; gerar tráfego e ver p95/throughput reagirem; `/targets` do Prometheus — os **quatro** alvos aparecem `up` (UP=4, DOWN=0), pode abrir sem receio; mostrar a métrica de negócio `fcg_payment_decisions_total` com os labels `status` e `rule`; **dizer em voz alta que a escolha é a Opção A e por quê** |
-| 13:00–14:00 | **3b. Trace distribuído da compra** | Jaeger: abrir o trace do `POST /api/v1/biblioteca` e percorrer os **9 spans** atravessando `catalog-api → RabbitMQ → payments-api → RabbitMQ → catalog-api`; mostrar os atributos `fcg.payment.status` e `fcg.payment.rule` no span do pagamento. **Ressalva honesta:** a cadeia do **cadastro** não fecha — a Function ainda não tem OTel (notifications-function#14) |
+| 13:00–14:00 | **3b. Traces distribuídos (compra e cadastro)** | Jaeger: abrir o trace do `POST /api/v1/biblioteca` e percorrer os **9 spans** atravessando `catalog-api → RabbitMQ → payments-api → RabbitMQ → catalog-api`; mostrar os atributos `fcg.payment.status` e `fcg.payment.rule` no span do pagamento. Depois abrir o trace do **cadastro** (`users-api → notifications-function`, 5 spans) e o da compra que chega à notificação (**10 spans em três serviços**): a plataforma inteira tem trace distribuído |
 | 14:00–17:00 | **4. NoSQL** | `POST /api/v1/avaliacoes` → 201; repetir com o mesmo usuário → **409** (índice unique); `GET .../avaliacoes/resumo` → média e distribuição; no `mongosh`: `db.avaliacoes.findOne()` mostrando o `contexto` livre e `db.avaliacoes.getIndexes()` |
 | 17:00–19:00 | **5. Cache** | Duas chamadas iguais com `curl -w '%{time_total}'`; `redis-cli --scan --pattern 'fcg:catalog:*'` mostrando a chave com a **geração**; atualizar um jogo; mostrar a geração **incrementada** e a chave nova |
 | 19:00–20:00 | **Fechamento** | `./scripts/verify-fase3.sh` verde; README e ADRs |
@@ -66,9 +66,10 @@ kubectl -n fcg exec deploy/redis -- redis-cli --scan --pattern 'fcg:catalog:*'
 
 ## O que NÃO prometer na narração
 
-- **"Trace distribuído de toda a plataforma"** — só a cadeia da **compra** fecha. A do **cadastro**
-  (`users-api → notifications-function`) não: a Function ainda não tem OpenTelemetry, e os traces do
-  `users-api` seguem em 0 de 10 multi-serviço (notifications-function#14). Mostre a compra, que é a
-  forte, e declare essa limitação; é mais sólido do que ser pego por ela.
+- **"O trace sempre fecha"** — ele fecha porque TODOS os publishers estão instrumentados. Um
+  publisher sem OpenTelemetry publica sem o header `MT-Activity-Id`, e o span do consumidor nasce
+  como trace próprio: a correlação é best-effort, por desenho. Vale dizer isso ao mostrar o Jaeger.
+- **Não prometa o span do MongoDB** — ele não aparece: o driver 3.x exige um pacote extra de
+  diagnóstico que a plataforma não usa.
 - **E-mail de notificação no `docker compose`** — no compose ninguém consome as filas desde a
   remoção do `notifications-api`. O fluxo de notificação só é observável no cluster.

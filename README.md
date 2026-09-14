@@ -64,13 +64,12 @@ flowchart TB
     Users -.->|OTLP| Jaeger
     Catalog -.->|OTLP| Jaeger
     Payments -.->|OTLP| Jaeger
+    Func -.->|OTLP| Jaeger
 ```
 
-> **O diagrama é o estado real, não o desejado.** Uma ausência está desenhada de propósito: a
-> `notifications-function` não exporta traces — por isso não há seta OTLP saindo dela. É o que faz a
-> cadeia do **cadastro** (`users-api → Function`) não fechar, e está rastreado em
-> [notifications-function#14](https://github.com/fcg-grupo-16/notifications-function/issues/14).
-> A cadeia da **compra** fecha: ver a seção de observabilidade e o
+> **O diagrama é o estado real, não o desejado.** Os **quatro** serviços exportam traces por OTLP:
+> a `notifications-function` passou a exportar também, e as duas cadeias — cadastro e compra —
+> fecham num único trace cada. Ver a seção de observabilidade e o
 > [ADR 0002](docs/adr/0002-observabilidade-opcao-a.md).
 >
 > A `notifications-function` **não** tem rota no gateway: é event-driven, acordada pelo KEDA quando
@@ -654,10 +653,25 @@ escolha aqui**. Optamos pela **Opção A**, por três motivos:
 > [payments-api#19](https://github.com/fcg-grupo-16/payments-api/issues/19) e
 > [#20](https://github.com/fcg-grupo-16/payments-api/issues/20).
 >
-> ⚠️ **A cadeia do CADASTRO ainda não fecha.** A `notifications-function` continua sem OpenTelemetry,
-> então os traces do `users-api` seguem em **0 de 10** multi-serviço: o `UserCreatedEvent` é publicado
-> com contexto, e o contexto morre quando a Function o consome. Rastreado em
-> [notifications-function#14](https://github.com/fcg-grupo-16/notifications-function/issues/14).
+> **A cadeia do CADASTRO também fecha.** A `notifications-function` restaura o contexto W3C que o
+> MassTransit grava no header `MT-Activity-Id` do envelope e abre um span `Consumer` filho dele.
+> Medido no cluster — trace `177e2dcf8e7a`, 5 spans em dois serviços:
+>
+> ```
+> users-api              server    POST api/v1/usuarios
+> users-api              producer  outbox send
+> users-api              client    outbox process
+> users-api              producer  Fcg.Contracts.Events:UserCreatedEvent send
+> notifications-function consumer  UserCreatedFunction
+> ```
+>
+> E a compra chega até a notificação: trace `ff866e2a4eb32ae4b59cdc2e9eabf008`, **10 spans em três
+> serviços** (`catalog-api`, `payments-api`, `notifications-function`). O span da função e o
+> `catalog-payment-processed receive` têm o mesmo pai — os dois consumidores do
+> `PaymentProcessedEvent` aparecem lado a lado.
+>
+> ⚠️ O que **não** é verdade é que isso tenha vindo de uma mudança nova: a instrumentação já estava
+> no `main` da Function desde o PR #13; o cluster é que servia uma imagem anterior a ele.
 
 ### Como os serviços são descobertos
 

@@ -5,6 +5,34 @@ Todas as mudanças relevantes deste repositório de orquestração são document
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/)
 e o versionamento adere a [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [0.22.0] - 2026-09-14
+
+### Modificado
+- **A documentação deixa de declarar que a cadeia do CADASTRO não fecha: ela fecha, e a da compra
+  chega até a notificação.** Medido no cluster:
+
+  | | Antes | Depois |
+  |---|---|---|
+  | `GET /api/services` do Jaeger | 4 serviços | **5** (+ `notifications-function`) |
+  | trace do cadastro | `users-api` em **0 de 10** multi-serviço, e a Function sequer aparecia no Jaeger | **5 spans**, `users-api` + `notifications-function` |
+  | trace da compra | 9 spans, 2 serviços | **10 spans, 3 serviços** (+ a Function) |
+
+  A `notifications-function` lê o contexto W3C do header `MT-Activity-Id` do envelope do MassTransit
+  — ela **não** usa MassTransit (consome pelo binding `RabbitMQTrigger`), então a costura é explícita.
+  Atualizados: diagrama e ressalva do README, ADR 0002, item 3 e tabela de pendências do relatório, e
+  o bloco 3b e o "O que não prometer" do roteiro.
+
+### Notas
+- ⚠️ **Nada disso veio de código novo neste ciclo.** A instrumentação já estava no `main` da
+  `notifications-function` desde o PR #13 daquele repositório. A
+  [notifications-function#14](https://github.com/fcg-grupo-16/notifications-function/issues/14), que
+  descrevia a Function como não instrumentada, foi aberta **depois** daquele merge e mediu um
+  checkout desatualizado. O que faltava era **deploy**: o cluster servia uma imagem anterior ao PR.
+  A lição fica registrada porque o modo de falha é silencioso — documentação e issue concordavam
+  entre si e ambas estavam erradas.
+- A entrada 0.21.0 abaixo continua afirmando que a cadeia do cadastro está aberta. **É histórico e
+  fica como está**, pela mesma regra que ela própria aplicou às 0.17.0 e 0.19.0.
+
 ## [0.21.0] - 2026-09-14
 
 ### Modificado
