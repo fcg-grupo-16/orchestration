@@ -38,6 +38,19 @@ data:
   ForwardedHeaders__ForwardLimit: "1"
   JwtSettings__Issuer: "FiapCloudGames"
   JwtSettings__Audience: "FiapCloudGames"
+
+  # Credencial SERVIÇO-A-SERVIÇO (notifications-function#9), com issuer/audience PRÓPRIOS.
+  #
+  # Não são cosméticos: o plugin `jwt` do Kong casa a credencial pela claim `iss` (ver
+  # gateway/40-kong-consumer.yaml, `key: "FiapCloudGames"`). Com um issuer distinto, NÃO existe
+  # credencial correspondente na borda, e um token de serviço é recusado pelo gateway — ele só vale
+  # na rede interna do cluster. O catalog-api também o rejeita, porque valida com a chave dos
+  # usuários.
+  #
+  # A chave em si (ServiceAuth__SecretKey) vem CIFRADA no users-api-secret e DEVE ser distinta da
+  # JwtSettings__SecretKey — o users-api recusa subir se forem iguais.
+  ServiceAuth__Issuer: "FiapCloudGames.Servicos"
+  ServiceAuth__Audience: "FiapCloudGames.Servicos"
 ---
 # O Secret `users-api-secret` agora vem CIFRADO de k8s/05-sealed-secrets.yaml (Sealed Secrets).
 # JwtSettings__SecretKey é idêntica à do catalog-api-secret (JWT parity) — ver seal-secrets.sh.
