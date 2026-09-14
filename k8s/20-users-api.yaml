@@ -96,18 +96,43 @@ spec:
             limits:
               cpu: 500m
               memory: 512Mi
+          # PROBES (issue #38) — valores EXPLÍCITOS, nunca os defaults.
+          #
+          # `timeoutSeconds` omitido vale **1 segundo** no Kubernetes, e era isso que matava este
+          # container. Em repouso o endpoint responde em milissegundos — medido aqui, n=30: máximo de
+          # 5 ms em `/health` e 25 ms em `/health/ready`. O problema nunca foi endpoint lento: é a
+          # probe não ter margem para CONTENÇÃO. Com o nó ocupado (builds .NET, rollout, vários
+          # `kubectl exec mongosh` dos scripts de teste), a mesma chamada passa de 1000 ms, e o
+          # kubelet matou este container — eventos capturados NESTE serviço:
+          #   Liveness probe failed: Get ".../health": context deadline exceeded
+          #   Killing  Container users-api failed liveness probe, will be restarted
+          # 5 s dá ~200x de folga sobre o pior caso medido aqui (25 ms), sem mascarar serviço de fato
+          # travado: com failureThreshold 3, um travamento real ainda é detectado em ~45 s.
+          #
+          # ⚠️ O CAMINHO também estava errado, e é o defeito mais grave: as duas probes batiam em
+          # `/health`, o endpoint AGREGADO legado (`MapHealthChecks("/health")` sem predicate), que
+          # executa os checks de Mongo, RabbitMQ e Redis. Liveness acoplada a dependência significa
+          # que um Mongo lento REINICIA um processo saudável — e como o users-api para de consumir a
+          # fila ao reiniciar (`Bus stopped`), a oscilação vira atraso de evento. `/health/live` é
+          # `Predicate = _ => false`: prova só que o processo responde HTTP. As dependências
+          # continuam sendo verificadas na readiness, onde falhar apenas tira o Pod do Service.
+          # O catalog-api e o payments-api já usavam os caminhos certos; só este ficara para trás.
           livenessProbe:
             httpGet:
-              path: /health
+              path: /health/live
               port: 8080
             initialDelaySeconds: 15
             periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
           readinessProbe:
             httpGet:
-              path: /health
+              path: /health/ready
               port: 8080
             initialDelaySeconds: 10
             periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
 ---
 apiVersion: v1
 kind: Service
