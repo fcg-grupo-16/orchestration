@@ -5,6 +5,60 @@ Todas as mudanças relevantes deste repositório de orquestração são document
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/)
 e o versionamento adere a [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [0.18.0] - 2026-09-14
+
+### Corrigido
+- **Liveness do MongoDB passa a ser TCP, não `exec mongosh` (#41).** O `mongosh` é um cliente Node:
+  cada invocação sobe um runtime inteiro. Medido com o nó ocioso: mediana **525 ms**, máximo
+  **2999 ms** para um simples `ping`. Sob concorrência — o padrão dos scripts deste repo — três
+  invocações simultâneas levaram **3,8 s, 45,9 s e 73,2 s**. Com `timeoutSeconds: 10`, o kubelet
+  registrava `command timed out after 10s` seguido de `Killing Container mongodb failed liveness
+  probe`, acumulando **17 restarts** com `exitCode: 137` e `reason: Error`. O mesmo teste por TCP:
+  **20 conexões, 0 falhas, mediana 2,0 ms, máximo 19,1 ms** — ~260x mais barato na mediana.
+  É também o contrato certo: liveness responde "o processo está vivo?", não "as dependências estão
+  boas?".
+- **Readiness do MongoDB continua `exec` — e tinha de continuar**: é ela que faz o bootstrap
+  idempotente do `rs0`, pré-requisito do outbox transacional. O que mudou foi a tolerância:
+  `failureThreshold` de 6 para **12** (a mesma filosofia do healthcheck do compose, que usa
+  `retries: 10` por conhecer a lentidão do mongosh) e `timeoutSeconds` de 10 para **8**, abaixo do
+  `periodSeconds: 10` de propósito — timeout maior que o período faz as execuções se sobreporem, e
+  cada uma sobe outro runtime Node, que é a própria contenção que a issue trata. (#41)
+- **O `users-api` apontava as DUAS probes para `/health` (#38)** — o endpoint **agregado legado**
+  (`MapHealthChecks("/health")` sem predicate), que executa os checks de Mongo, RabbitMQ e Redis.
+  Liveness acoplada a dependência **reinicia processo saudável** quando o banco oscila, e como o
+  serviço para de consumir a fila ao reiniciar (`Bus stopped`), a oscilação vira atraso de evento.
+  Agora usa `/health/live` (`Predicate = _ => false`) e `/health/ready`, como o `catalog-api` e o
+  `payments-api` já faziam.
+- **`timeoutSeconds` explícito em todos os serviços (#38).** Omitido, o Kubernetes aplica **1
+  segundo** — o título da issue dizia "tem `timeoutSeconds: 1`", mas o manifesto **omitia** o campo;
+  quem fosse consertar procuraria uma linha inexistente. Em repouso os endpoints respondem em
+  milissegundos (medido, n=30: máximo de 25 ms no `users-api`, 35 ms no `catalog-api`, 3 ms no
+  `payments-api`); o problema nunca foi endpoint lento, e sim a probe não ter margem para
+  **contenção**. Agora `timeoutSeconds: 5` e `failureThreshold: 3` explícitos nos três.
+
+### Verificado
+- **Critério literal da #41** — `./scripts/gateway-test.sh` (17/17) e `./scripts/keda-test.sh`
+  (12/12) executados de ponta a ponta: `mongodb-0` de **1 para 1** restart, os três serviços em
+  **0**, e **zero** falhas de liveness na janela dos dois scripts (os únicos eventos `Killing` são
+  teardown esperado: os dois pods do teste de rate limit e a Function voltando a zero pelo KEDA).
+- Sob a contenção que antes derrubava tudo, os três serviços registraram **0 restarts** e **zero**
+  falhas de liveness; só a readiness oscilou — que é onde a dependência deve ser checada, porque
+  falhar ali tira do Service em vez de matar o processo.
+- Os valores do manifesto conferem com os do cluster em 8/8 comparações.
+
+### Notas
+- **Os limites de memória do MongoDB ficam como estão.** Nenhum dos 17 restarts foi OOM. Forçando
+  **quatro** `mongosh` concorrentes dentro do container, o kernel matou o mongod com
+  `reason: OOMKilled` — mas isso é carga artificial que eu mesmo gerei medindo; os scripts do repo
+  executam um `mongosh` por vez. Registrado no manifesto para quem depurar um OOM aqui não procurar
+  no lugar errado.
+- ⚠️ **"Não há eventos de OOM" não é prova de nada** — medido nesta base: um container pode terminar
+  com `reason: OOMKilled` no status enquanto o `kubectl get events` mostra **zero** eventos de OOM.
+  O que identifica morte por probe é o par `reason: Error` + o evento `Killing ... failed liveness
+  probe`. Eu havia usado o argumento fraco num comentário de manifesto; foi removido.
+- Das medições, **3 restarts do `mongodb-0` e 2 do `users-api` foram causados por mim** ao reproduzir
+  a contenção, não pela operação normal da plataforma.
+
 ## [0.17.0] - 2026-09-14
 
 ### Adicionado
