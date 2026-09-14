@@ -5,6 +5,24 @@ Todas as mudanças relevantes deste repositório de orquestração são document
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/)
 e o versionamento adere a [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [0.25.0] - 2026-09-14
+
+### Alterado
+- **ADR 0007 — a política de falha da consulta de contato passou a ter DOIS casos.** O ADR foi
+  escrito prevendo um: dependência indisponível, exceção sobe, host reentrega. A implementação
+  ([notifications-function#16](https://github.com/fcg-grupo-16/notifications-function/pull/16))
+  acrescentou o segundo, e ele não veio de projeto — veio de medição. Na primeira prova ponta a
+  ponta, o `smoke-test.sh` apagou o usuário que ele mesmo havia criado, e a Function gastou as cinco
+  tentativas batendo no mesmo 404.
+
+  | Falha | Comportamento | Porquê |
+  |---|---|---|
+  | `users-api` fora, lento ou com erro | a exceção **sobe** | transitória: o host reentrega e, no limite, manda para a dead-letter |
+  | Usuário inexistente (**404**) | `Warning` e **segue** (ack) | determinística: reentregar bate no mesmo 404 até a DLQ |
+
+  Sem a distinção, todo usuário apagado com uma compra em voo gera cinco reentregas inúteis e uma
+  mensagem na dead-letter que ninguém consegue reprocessar com sucesso.
+
 ## [0.24.0] - 2026-09-14
 
 ### Adicionado

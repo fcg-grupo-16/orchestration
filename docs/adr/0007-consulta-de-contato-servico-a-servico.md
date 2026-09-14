@@ -74,8 +74,17 @@ com a role certa passaria.
 ## Consequências
 
 - **Acoplamento síncrono**, que era o custo conhecido da Opção B. Mitigado com cache no Redis (o de
-  idempotência, já dedicado e durável — ADR 0006), timeout curto e política de falha que **não**
+  idempotência, já dedicado e durável — ADR 0006), timeout curto e uma política de falha que **não**
   derruba o processamento da mensagem.
+
+  A política acabou com **dois** casos, e o segundo não era previsto quando este ADR foi escrito —
+  saiu de uma medição. Na primeira prova ponta a ponta, o `smoke-test.sh` apagou o usuário que ele
+  mesmo havia criado, e a `notifications-function` gastou as cinco tentativas batendo no mesmo 404:
+
+  | Falha | Comportamento | Porquê |
+  |---|---|---|
+  | `users-api` fora, lento ou com erro | a exceção **sobe** | transitória: o host reentrega e, no limite, manda para a dead-letter. Entre adiar e perder em silêncio, adiamos |
+  | Usuário inexistente (**404**) | `Warning` e **segue** (ack) | determinística: reentregar bate no mesmo 404 até a DLQ, e quem não existe nunca vai ter e-mail |
 - **Mais um segredo no contrato**: `ServiceAuth__SecretKey`, idêntico em `users-api-secret` e
   `notifications-function-secret`, e obrigatoriamente diferente do `JwtSettings__SecretKey`.
 - **Configuração ausente devolve 401, não 500.** O `ServiceAuth` é opcional no startup, porque a
