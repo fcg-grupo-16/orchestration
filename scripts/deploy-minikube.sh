@@ -123,6 +123,22 @@ kubectl -n fcg delete deployment mongodb --ignore-not-found
 echo "==> Removendo o Ingress NGINX legado (substituído pelo Kong)"
 kubectl -n fcg delete ingress fcg-ingress --ignore-not-found
 
+# Fase 3 (#29): o notifications-api foi SUBSTITUÍDO pela notifications-function. Apagar
+# k8s/23-notifications-api.yaml do git NÃO basta, pela mesma razão do Ingress acima — e aqui a
+# consequência é pior: num cluster que já rodou a main, o Deployment legado continua de pé, a
+# imagem notifications-api:local continua carregada no minikube e o Secret continua resolvendo o
+# envFrom dele. Resultado: ele e a Function viram COMPETING CONSUMERS das mesmas duas filas, cada
+# e-mail sai por um dos dois de forma imprevisível, e o teste de aceite do KEDA fica não-determinístico.
+# Bônus: o pod legado tem prometheus.io/scrape "true" e o Prometheus do cluster descobre por
+# annotation de pod, então o target obsoleto reaparece.
+# No-op em cluster limpo, como as duas limpezas acima.
+echo "==> Removendo o notifications-api legado (substituído pela Function serverless)"
+kubectl -n fcg delete deployment notifications-api --ignore-not-found
+kubectl -n fcg delete service notifications-api --ignore-not-found
+kubectl -n fcg delete configmap notifications-api-config --ignore-not-found
+kubectl -n fcg delete sealedsecret notifications-api-secret --ignore-not-found
+kubectl -n fcg delete secret notifications-api-secret --ignore-not-found
+
 echo "==> Aplicando manifestos (kubectl apply -R -f k8s/)"
 kubectl apply -R -f "$ROOT_DIR/k8s/"
 

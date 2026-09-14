@@ -49,6 +49,25 @@ cleanup() {
        if (a) { db.refresh_tokens.deleteMany({UsuarioId:a._id, CriadoEm:{\$gte:new Date('$INICIO')}}); }" \
       >/dev/null 2>&1 \
       || echo "  AVISO: nao consegui limpar o residuo de teste (${EMAIL})" >&2
+    # A notificacao de boas-vindas gravada pela Function tambem e residuo deste teste: o cadastro
+    # publica UserCreatedEvent e a Function persiste em notificationsdb.
+    #
+    # ⚠️ A escrita e ASSINCRONA, e com scale-to-zero o KEDA ainda precisa ACORDAR o pod: o documento
+    # costuma aparecer DEPOIS do fim das assercoes. A primeira versao deste delete rodava antes da
+    # escrita e nao apagava nada -- medido, um documento `gw-*` ficou orfao e a contagem "antes x
+    # depois" deu igual por coincidencia de tempo, escondendo o vazamento. Por isso a espera bounded.
+    for _ in $(seq 1 18); do
+      NOTIF=$(kubectl -n fcg exec mongodb-0 -- mongosh --quiet notificationsdb --eval \
+        "print(db.notifications.countDocuments({Recipient:'$EMAIL'}))" 2>/dev/null | tr -d '[:space:]')
+      if [ "${NOTIF:-0}" != "0" ]; then break; fi
+      sleep 5
+    done
+    kubectl -n fcg exec mongodb-0 -- mongosh --quiet notificationsdb --eval \
+      "db.notifications.deleteMany({Recipient:'$EMAIL'});" >/dev/null 2>&1 \
+      || echo "  AVISO: nao consegui remover a notificacao de teste (${EMAIL})" >&2
+    if [ "${NOTIF:-0}" = "0" ]; then
+      echo "  AVISO: a notificacao de ${EMAIL} nao apareceu em 90s; pode ficar orfa em notificationsdb" >&2
+    fi
   fi
   rm -rf "$TMPD"
 }

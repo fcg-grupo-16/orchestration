@@ -23,17 +23,24 @@ e o versionamento adere a [Semantic Versioning](https://semver.org/lang/pt-BR/).
   Deployment **sem `replicas`** de propósito: quem controla a contagem é o KEDA. (#29)
 - **`scripts/keda-test.sh`**: matriz de aceite do ciclo 0→1→0 contra o cluster. Existe pela mesma
   razão do `gateway-test.sh`: o `kubeconform` do CI **pula** os CRs do KEDA (sem schema publicado),
-  e o modo de falha engana — o `ScaledObject` fica `Ready=False` com o Deployment parado em 0
-  réplica, o que de longe parece scale-to-zero funcionando, mas nada acorda quando chega mensagem.
-  A asserção decisiva é de **execução** (`Executed ... Succeeded`), não de "o pod subiu". São 12
-  asserções, e o script remove o usuário que ele mesmo cadastra — medido: `usuarios` e
-  `refresh_tokens` idênticos antes e depois de uma execução completa. (#29)
+  e o modo de falha engana de **duas** formas medidas, com resultados OPOSTOS: `queueName` inexistente
+  deixa `Ready=False` (`TriggerError`), mas credencial apontando para secret inexistente deixa
+  **`Ready=True`** — "ready for scaling", HPA criado, zero erro no operador. Logo **`Ready=True` não
+  prova que o scaler alcança o broker**, e esse é justamente o caso do primeiro defeito desta entrega.
+  Nos dois o Deployment fica em 0 réplica, indistinguível de scale-to-zero saudável; a asserção
+  decisiva é a de **execução** (`Executed ... Succeeded`). São 12 asserções, e o script limpa o que
+  cria nas três coleções que toca. (#29)
 - Credencial selada `keda-rabbitmq-secret` para o scaler, com **FQDN**. (#29)
 
 ### Modificado
 - `scripts/deploy-minikube.sh`: instala o KEDA por **URL pinada** antes do `kubectl apply` (o
-  `ScaledObject` depende dos CRDs), e builda a Function com **`--platform linux/amd64`** num laço
-  `FUNCTIONS` separado do de `SERVICES`. (#29)
+  `ScaledObject` depende dos CRDs), builda a Function com **`--platform linux/amd64`** num laço
+  `FUNCTIONS` separado do de `SERVICES`, e **remove o `notifications-api` legado**. Esta última parte
+  era um defeito: apagar `k8s/23-notifications-api.yaml` do git não remove nada de um cluster que já
+  rodou a `main` — o Deployment legado voltaria de pé (a imagem segue carregada no minikube, o Secret
+  resolve o `envFrom`) e ele e a Function virariam *competing consumers* das mesmas filas, tornando o
+  teste de aceite não-determinístico. Mesma razão da limpeza do `fcg-ingress`, que o comentário três
+  linhas acima já enunciava. (#29)
 - `.github/workflows/ci.yml`: a lacuna conhecida do `kubeconform` passou a citar também os CRs do
   KEDA (`ScaledObject`/`TriggerAuthentication`), não só os do Kong. (#29)
 - `docker/rabbitmq/README.md`: a prosa escrita antevendo esta remoção foi para o passado. A decisão
@@ -77,6 +84,22 @@ e o versionamento adere a [Semantic Versioning](https://semver.org/lang/pt-BR/).
   no caminho do compose — as filas existem, pois o `definitions.json` está assado na imagem do broker.
   Nada quebra, mas não há e-mail simulado para ver localmente: o fluxo de notificação só é observável
   no cluster. Registrado no cabeçalho do `smoke-test.sh` e no README.
+- **O endpoint HTTP de histórico ficou inalcançável.** A Function tem **três** funções — duas com
+  `RabbitMQTrigger` e a `NotificationHistoryFunction` com **HTTP** (confirmado no `functions.metadata`
+  da imagem). O `notifications-api` servia `GET /api/v1/notificacoes` atrás de um Service; o
+  `k8s/24-notifications-function.yaml` não declara `containerPort` nem Service, e o scale-to-zero
+  mantém 0 réplica. Não corrigido aqui: expor exigiria Service + pod quente (anulando o
+  scale-to-zero) ou ativação por HTTP, além de tratar a `x-functions-key`.
+- **Correções de afirmações desta própria entrega**, encontradas em revisão adversarial e registradas
+  por honestidade: (a) "resíduo zero no Mongo" era **falso** — media só `usersdb`, enquanto a Function
+  persiste toda notificação em `notificationsdb.notifications`; 14 documentos de teste haviam
+  acumulado (12 do `gateway-test.sh`, 2 do `keda-test.sh`) e os dois scripts passaram a limpá-la;
+  (b) "7 → 6 SealedSecrets" estava errado — `origin/main` já tinha **6** e HEAD tem **6** (o número 7
+  foi um estado transitório da sessão, não do diff); (c) "diff do CHANGELOG +67 −0" estava errado —
+  o commit `5858a22` traz **+71 −0** (o total da PR é alvo móvel: muda a cada commit, então citar
+  o número da PR numa entrada versionada seria errar de novo); (d) "7 entradas no
+  `definitions.json`" estava errado — o arquivo declara **3 filas**, mais 5 exchanges, 5 bindings
+  e 1 policy.
 - **Ordem da remoção importou.** O `notifications-api` só saiu depois de a Function ter
   comprovadamente consumido um evento real. Com os dois de pé eles são *competing consumers* da mesma
   fila e cada e-mail sai por um dos dois de forma imprevisível — durante a validação isto apareceu de

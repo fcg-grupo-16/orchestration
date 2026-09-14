@@ -16,7 +16,11 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 # do Kong ausente (alguém já desinstalou o gateway à mão). Qualquer outro erro aborta.
 echo "==> Removendo os manifestos (namespace fcg + gateway)"
 if ! ERRO=$(kubectl delete -R -f "$ROOT_DIR/k8s/" --ignore-not-found 2>&1); then
-  if echo "$ERRO" | grep -q "no matches for kind"; then
+  # ⚠️ `grep -q` sozinho falha ABERTO em saída MISTA: se o delete produzir uma linha
+  # "no matches for kind" E TAMBÉM um erro real (RBAC, admissão, timeout parcial), o grep casa a
+  # primeira e o script engole o resto, imprimindo sucesso com exit 0. Medido em isolamento.
+  # Agora só tolera se NENHUMA linha de erro deixar de casar a frase.
+  if ! echo "$ERRO" | grep -E '^(error|Error)' | grep -qv "no matches for kind"; then
     echo "   aviso: CRDs do Kong ou do KEDA ausentes (já removidos à mão) — seguindo"
     echo "$ERRO" | grep -v "no matches for kind" || true
   else
@@ -139,7 +143,15 @@ if [ -z "$PRESERVAR_KEDA" ] && [ "${KEDA_FORA:-0}" -eq 0 ]; then
   kubectl delete --ignore-not-found \
     -f "https://github.com/kedacore/keda/releases/download/v${KEDA_VERSION}/keda-${KEDA_VERSION}.yaml"
 else
-  echo "==> KEDA PRESERVADO: ${PRESERVAR_KEDA:-há CRs do KEDA fora de fcg (${KEDA_FORA:-?})}"
+  echo "==> CRDs do KEDA PRESERVADOS: ${PRESERVAR_KEDA:-há CRs do KEDA fora de fcg (${KEDA_FORA:-?})}"
+  # Preservar os CRDs é o certo (são cluster-scoped), mas o RESTO do release não é compartilhado:
+  # namespace, deployments, webhook e apiservice são nossos. Sem isto, um cluster onde alguém já
+  # apagou os CRDs à mão ficava com o operador de pé para sempre — assimetria que este bloco existe
+  # para evitar.
+  echo "    removendo o resto do release (namespace, webhook, apiservice), mantendo os CRDs"
+  kubectl delete validatingwebhookconfiguration keda-admission --ignore-not-found
+  kubectl delete apiservice v1beta1.external.metrics.k8s.io --ignore-not-found
+  kubectl delete namespace keda --ignore-not-found
 fi
 
 echo "Recursos FCG, gateway e KEDA removidos."

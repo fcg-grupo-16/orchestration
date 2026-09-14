@@ -406,11 +406,18 @@ Ou, de uma vez, a matriz de aceite (**12 asserções**):
 ./scripts/keda-test.sh
 ```
 
-Ela existe pela mesma razão do `gateway-test.sh`: o `kubeconform` do CI **pula** os CRs do KEDA, e o
-modo de falha engana — o `ScaledObject` fica `Ready=False` com o Deployment parado em 0 réplica, o que
-de longe parece scale-to-zero funcionando, mas nada acorda quando chega mensagem. A asserção decisiva
-é de **execução** (`Executed ... Succeeded`), não de "o pod subiu". O script apaga o usuário que ele
-mesmo cadastra.
+Ela existe pela mesma razão do `gateway-test.sh`: o `kubeconform` do CI **pula** os CRs do KEDA. E o
+modo de falha engana de **duas** formas medidas, com resultados opostos:
+
+| quebra | condição `Ready` | pega pela asserção 1? |
+|---|---|---|
+| `queueName` inexistente | `False` (`TriggerError`), com erro no operador | sim |
+| credencial → secret inexistente | **`True`** ("ready for scaling"), HPA criado, sem erro no log | **não** |
+
+Ou seja: **`Ready=True` não prova que o scaler alcança o broker** — e esse segundo caso é exatamente a
+classe do primeiro defeito desta entrega. Nos dois o Deployment fica em 0 réplica, indistinguível de
+scale-to-zero saudável. A asserção decisiva é a de **execução** (`Executed ... Succeeded`); a de
+`Ready` é necessária, não suficiente. O script limpa o que cria nas três coleções que toca.
 
 ### O que foi medido
 
@@ -419,9 +426,14 @@ mesmo cadastra.
 | Pod acordado após o evento | **6s** e **11s** em duas execuções (teto é o `pollingInterval: 15`, mais a partida emulada) |
 | Processamento | `Executed 'Functions.UserCreatedFunction' (Succeeded, Duration=3080ms)` |
 | Volta a zero réplica | **63s** e **71s** após o disparo (`cooldownPeriod: 60`) |
-| Resíduo do teste no Mongo | zero (`usuarios` e `refresh_tokens` idênticos antes e depois) |
+| Resíduo do teste no Mongo | zero nas **três** coleções que ele toca (`usersdb.usuarios`, `usersdb.refresh_tokens`, `notificationsdb.notifications`) |
 
 Os tempos **variam** de execução para execução; não são especificação.
+
+> **Correção registrada:** a primeira versão desta tabela afirmava "resíduo zero" medindo só
+> `usersdb`. Era **falso**: a Function persiste **toda** notificação em `notificationsdb.notifications`,
+> e nem o `keda-test.sh` nem o `gateway-test.sh` limpavam essa coleção — 14 documentos de teste
+> haviam acumulado (12 do gateway, 2 do KEDA). Os dois scripts passaram a apagá-la.
 
 ### Ressalvas que valem conhecer
 
@@ -440,6 +452,13 @@ Os tempos **variam** de execução para execução; não são especificação.
 - **A credencial do scaler usa FQDN** (`rabbitmq.fcg.svc.cluster.local`) porque o operador do KEDA
   roda no namespace `keda`, onde o nome curto não resolve. É a mesma credencial dos serviços, selada
   à parte só por causa do host.
+- ⚠️ **O endpoint HTTP de histórico ficou inalcançável na plataforma.** A Function tem **três**
+  funções — `UserCreatedFunction` e `PaymentProcessedFunction` (RabbitMQ) e `NotificationHistoryFunction`
+  (**HTTP**) —, confirmado na imagem construída (`functions.metadata`). O `notifications-api` servia
+  `GET /api/v1/notificacoes` atrás de um Service; o `k8s/24-notifications-function.yaml` **não declara
+  `containerPort` nem Service**, e o scale-to-zero mantém 0 réplica. Consciente e não corrigido aqui:
+  expor o endpoint exigiria Service + pod quente (o que anularia o scale-to-zero) ou um caminho de
+  ativação por HTTP, além de tratar a `x-functions-key`. Fica como trabalho separado.
 - **A `notifications-function` não está no `docker-compose.yml`**: scale-to-zero exige KEDA, que só
   existe no minikube. Para validar o código localmente, use `func start` no repo da Function.
 - ⚠️ **Consequência disso no compose:** desde a remoção do `notifications-api`, **ninguém consome**

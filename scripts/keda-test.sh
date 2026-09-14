@@ -3,9 +3,15 @@
 #
 # Por que este script existe: o `kubeconform` do CI PULA os CRs do KEDA (ScaledObject e
 # TriggerAuthentication não têm schema publicado), exatamente como pula os do Kong. Um campo errado
-# no scaler passa verde no pipeline. Pior, o modo de falha ENGANA: o ScaledObject fica
-# `Ready=False` com o Deployment parado em 0 réplica, o que de longe parece "scale-to-zero
-# funcionando" — mas nada acorda quando entra mensagem. A única validação real é comportamental.
+# no scaler passa verde no pipeline. Pior, o modo de falha ENGANA — e de duas formas MEDIDAS, com
+# resultados OPOSTOS na condição `Ready`:
+#   • `queueName` inexistente  -> Ready=False (TriggerError), com erro no log do operador;
+#   • credencial apontando para secret inexistente -> **Ready=True**, "ScaledObject is defined
+#     correctly and is ready for scaling", HPA criado e NENHUM erro no operador.
+# Ou seja: `Ready=True` NÃO prova que o scaler alcança o broker — e esse segundo caso é justamente a
+# classe do primeiro defeito encontrado nesta issue (credencial com nome curto, irresolvível do
+# namespace `keda`). Nos dois casos o Deployment fica parado em 0 réplica, indistinguível de
+# scale-to-zero saudável. Só a asserção de EXECUÇÃO decide; a de `Ready` é necessária, não suficiente.
 #
 # Uso: ./scripts/keda-test.sh   (requer a plataforma implantada: ./scripts/deploy-minikube.sh)
 set -euo pipefail
@@ -34,12 +40,21 @@ cleanup() {
   # O teste cadastra um usuário REAL para gerar o UserCreatedEvent. Sem esta limpeza o script
   # deixaria resíduo permanente no usersdb a cada execução.
   if [ -n "$EMAIL" ]; then
+    # DOIS bancos, e a primeira versao desta limpeza so cuidava do primeiro:
+    #   usersdb.usuarios          -> a conta que o teste cadastra
+    #   notificationsdb.notifications -> a Function grava TODA notificacao enviada. Sem isto o
+    #     script acumulava um documento por execucao (medido: 29 -> 30), e a tabela do README
+    #     afirmava "residuo zero" com base so no usersdb.
+    # NAO se mexe em refresh_tokens aqui: este teste nao faz login (zero chamadas a /auth/login) e
+    # um cadastro nao gera refresh_token (medido: 43 -> 43). A versao anterior herdou esse delete do
+    # gateway-test.sh, onde ele faz sentido; aqui so poderia apagar sessao de TERCEIRO que logasse
+    # durante os vários minutos de execucao.
     kubectl -n "$NS" exec mongodb-0 -- mongosh --quiet usersdb --eval \
-      "var u=db.usuarios.findOne({Email:'$EMAIL'},{_id:1});
-       if (u) { db.usuarios.deleteOne({_id:u._id}); }
-       var a=db.usuarios.findOne({Email:'admin@fcg.com'},{_id:1});
-       if (a) { db.refresh_tokens.deleteMany({UsuarioId:a._id, CriadoEm:{\$gte:new Date('$INICIO')}}); }" \
-      >/dev/null 2>&1 || echo "  AVISO: nao consegui limpar o residuo de teste (${EMAIL})" >&2
+      "var u=db.usuarios.findOne({Email:'$EMAIL'},{_id:1}); if (u) { db.usuarios.deleteOne({_id:u._id}); }" \
+      >/dev/null 2>&1 || echo "  AVISO: nao consegui remover o usuario de teste (${EMAIL})" >&2
+    kubectl -n "$NS" exec mongodb-0 -- mongosh --quiet notificationsdb --eval \
+      "db.notifications.deleteMany({Recipient:'$EMAIL'});" \
+      >/dev/null 2>&1 || echo "  AVISO: nao consegui remover a notificacao de teste (${EMAIL})" >&2
   fi
   rm -rf "$TMPD"
 }
@@ -69,10 +84,27 @@ for q in notifications-user-created notifications-payment-processed; do
 done
 
 echo "==> Estado OCIOSO (o requisito de otimização de recursos)"
+# ESPERA o ocioso antes de AFIRMAR o ocioso. Sem isto o script reprovava espuriamente sempre que
+# qualquer evento recente tivesse acordado a Function. Medido: rodar o gateway-test.sh minutos antes
+# deixa a Function de pé dentro do `cooldownPeriod`, e as asserções 4, 5 e 6 reprovaram num sistema
+# ÍNTEGRO — o sintoma revelador foi "pod apareceu em 0s do disparo", porque o pod já estava lá.
+# Teto = cooldownPeriod (60s) + margem para a virada do HPA.
+echo "     aguardando o estado ocioso (até 150s)"
+for _ in $(seq 1 30); do
+  if [ "$(replicas)" = "0" ] && [ "$(pods_vivos)" -eq 0 ]; then break; fi
+  sleep 5
+done
 check "4. Deployment em 0 replica" "0" "$(replicas)"
 check "5. nenhum pod da Function" "0" "$(pods_vivos)"
-ATIVO=$(kubectl -n "$NS" get scaledobject "$DEPLOY" \
-  -o jsonpath='{.status.conditions[?(@.type=="Active")].status}' 2>/dev/null)
+# `Active` fica `Unknown` por alguns segundos logo apos o ScaledObject ser criado (observado 2x,
+# assentando em <=5s). Sem esta espera, um keda-test.sh disparado imediatamente depois do deploy
+# reprovaria por uma janela transitoria, nao por defeito.
+for _ in $(seq 1 12); do
+  ATIVO=$(kubectl -n "$NS" get scaledobject "$DEPLOY" \
+    -o jsonpath='{.status.conditions[?(@.type=="Active")].status}' 2>/dev/null)
+  [ "$ATIVO" = "Unknown" ] || break
+  sleep 5
+done
 check "6. ScaledObject Active=False (fila vazia)" "False" "${ATIVO:-ausente}"
 
 echo "==> DISPARO: evento real pelo gateway"

@@ -26,7 +26,6 @@ JWT_SECRET_KEY="${JWT_SECRET_KEY:-FiapCloudGames_Demo_SecretKey_Com_Pelo_Menos_2
 MONGO_USERS_CONN="${MONGO_USERS_CONN:-mongodb://mongodb:27017/?replicaSet=rs0}"
 MONGO_CATALOG_CONN="${MONGO_CATALOG_CONN:-mongodb://mongodb:27017/?replicaSet=rs0}"
 MONGO_PAYMENTS_CONN="${MONGO_PAYMENTS_CONN:-mongodb://mongodb:27017/?replicaSet=rs0}"
-MONGO_NOTIFICATIONS_CONN="${MONGO_NOTIFICATIONS_CONN:-mongodb://mongodb:27017/?replicaSet=rs0}"
 RABBIT_USER="${RABBIT_USER:-guest}"
 RABBIT_PASS="${RABBIT_PASS:-guest}"
 RABBIT_HOST="${RABBIT_HOST:-rabbitmq}"
@@ -34,6 +33,9 @@ RABBIT_HOST="${RABBIT_HOST:-rabbitmq}"
 # RabbitMQTrigger da Azure Functions exige uma URI AMQP COMPLETA numa única app setting
 # (desde a v2 da extensão), cujo NOME é referenciado pelo atributo
 # [RabbitMQTrigger(..., ConnectionStringSetting = "RabbitMqConnection")].
+# Registra se a conexão veio do AMBIENTE, antes de aplicar o default: serve para avisar sobre a
+# armadilha de rotação logo abaixo.
+RABBIT_CONNECTION_DO_ENV="${RABBIT_CONNECTION+sim}"
 RABBIT_CONNECTION="${RABBIT_CONNECTION:-amqp://${RABBIT_USER}:${RABBIT_PASS}@${RABBIT_HOST}:5672/}"
 
 # Conexão com FQDN, EXCLUSIVA do scaler do KEDA.
@@ -44,7 +46,22 @@ RABBIT_CONNECTION="${RABBIT_CONNECTION:-amqp://${RABBIT_USER}:${RABBIT_PASS}@${R
 #                              dial tcp: lookup rabbitmq on 10.96.0.10:53: no such host"
 # `RABBIT_CONNECTION` acima continua com o nome curto de propósito: quem a consome (os serviços e a
 # própria Function) roda dentro de `fcg`. São a MESMA credencial, com escopos de DNS diferentes.
-RABBIT_CONNECTION_FQDN="${RABBIT_CONNECTION_FQDN:-amqp://${RABBIT_USER}:${RABBIT_PASS}@${RABBIT_HOST}.${NS}.svc.cluster.local:5672/}"
+# Só sufixa o namespace quando o host é um nome CURTO. Com RABBIT_HOST=broker.example.com a
+# concatenação produziria `broker.example.com.fcg.svc.cluster.local`, que não resolve.
+case "$RABBIT_HOST" in
+  *.*|localhost) RABBIT_HOST_FQDN="$RABBIT_HOST" ;;
+  *)             RABBIT_HOST_FQDN="${RABBIT_HOST}.${NS}.svc.cluster.local" ;;
+esac
+RABBIT_CONNECTION_FQDN="${RABBIT_CONNECTION_FQDN:-amqp://${RABBIT_USER}:${RABBIT_PASS}@${RABBIT_HOST_FQDN}:5672/}"
+
+# ⚠️ ARMADILHA DE ROTAÇÃO: sobrescrever só uma das duas faz os segredos DIVERGIREM em silêncio, e o
+# scaler do KEDA volta a falhar como no defeito original da #29. O caminho recomendado é sobrescrever
+# RABBIT_USER/RABBIT_PASS/RABBIT_HOST, de onde as duas derivam.
+if [ -n "$RABBIT_CONNECTION_DO_ENV" ] && [ -z "${RABBIT_CONNECTION_FQDN_DO_ENV:-}" ]; then
+  echo "AVISO: RABBIT_CONNECTION veio do ambiente mas RABBIT_CONNECTION_FQDN não." >&2
+  echo "       O segredo do KEDA usará o valor derivado de RABBIT_USER/PASS/HOST e pode divergir." >&2
+  echo "       Prefira exportar RABBIT_USER/RABBIT_PASS/RABBIT_HOST." >&2
+fi
 MONGO_FUNCTION_CONN="${MONGO_FUNCTION_CONN:-mongodb://mongodb:27017/?replicaSet=rs0}"
 # Store de idempotência da Function. Depende do Redis provisionado na issue #25 — o segredo é
 # gerado desde já para o deploy da Function (#29) não precisar de um segundo passe aqui.

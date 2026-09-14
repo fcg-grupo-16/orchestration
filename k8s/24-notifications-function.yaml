@@ -17,8 +17,9 @@ metadata:
 data:
   FUNCTIONS_WORKER_RUNTIME: "dotnet-isolated"
   AzureFunctionsJobHost__Logging__Console__IsEnabled: "true"
-  # Vazio funciona: nenhum trigger desta Function depende de Storage Account (os dois são
-  # RabbitMQTrigger), e o host indexa e EXECUTA as funções sem ele — medido no cluster:
+  # Vazio funciona: nenhum trigger desta Function depende de Storage Account — são TRÊS funções,
+  # duas com RabbitMQTrigger e uma com HttpTrigger (histórico) —, e o host indexa e EXECUTA as
+  # funções sem ele. Medido no cluster:
   # `Executed 'Functions.UserCreatedFunction' (Succeeded, Duration=3080ms)`.
   #
   # ⚠️ Efeito colateral permanente, e não é falha: com Storage vazio o host do Functions reporta
