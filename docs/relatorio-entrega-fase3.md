@@ -92,14 +92,15 @@ requisições por status HTTP, taxa de erro 5xx, top 5 rotas mais lentas e saúd
 
 **Jaeger** acrescenta o pilar de traces, que a Opção A não exige.
 
-> ⚠️ **A cobertura de traces é parcial — 2 dos 4 serviços — e não há trace distribuído entre
-> serviços.** Medido: o Jaeger conhece apenas `catalog-api` e `users-api`; `payments-api` e
-> `notifications-function` não têm pacote OpenTelemetry. Dos 10 traces mais recentes de cada serviço
-> instrumentado, **0 de 10** contêm mais de um serviço — a cadeia da compra se parte no
-> `payments-api`, que não propaga o contexto. Rastreado em
-> [payments-api#19](https://github.com/fcg-grupo-16/payments-api/issues/19), aberta antes desta
-> medição como parte do próprio épico. O que é demonstrável hoje é o trace **por serviço**, incluindo
-> os spans de publicação do outbox.
+> **O trace distribuído da compra existe e é demonstrável.** Medido no cluster: o Jaeger conhece
+> `catalog-api`, `payments-api` e `users-api`, e o trace
+> `12a9febb22840ab46a93a61d4df07983` costura **9 spans** atravessando
+> `catalog-api → RabbitMQ → payments-api → RabbitMQ → catalog-api`, com os atributos de negócio
+> (`fcg.order.id`, `fcg.payment.status`, `fcg.payment.rule`) no span do pagamento.
+>
+> ⚠️ **A cadeia do cadastro ainda não fecha** — a `notifications-function` não tem OpenTelemetry, e os
+> traces do `users-api` seguem em 0 de 10 multi-serviço
+> ([notifications-function#14](https://github.com/fcg-grupo-16/notifications-function/issues/14)).
 
 ### 4. NoSQL
 
@@ -135,9 +136,7 @@ Registradas como issues, e não omitidas:
 
 | Issue | O quê |
 |---|---|
-| [payments-api#19](https://github.com/fcg-grupo-16/payments-api/issues/19) | Traces do fluxo de compra: sem instrumentação aqui, a cadeia se parte no meio |
-| [payments-api#20](https://github.com/fcg-grupo-16/payments-api/issues/20) | `/metrics` em 404 — target do Prometheus permanentemente `down` |
-| [notifications-function#14](https://github.com/fcg-grupo-16/notifications-function/issues/14) | Function sem OpenTelemetry: o trabalho dela não aparece no Jaeger |
+| [notifications-function#14](https://github.com/fcg-grupo-16/notifications-function/issues/14) | Function sem OpenTelemetry: a cadeia de trace do **cadastro** não fecha |
 | [notifications-function#9](https://github.com/fcg-grupo-16/notifications-function/issues/9) | Confirmação de compra endereçada ao `UserId`, não a um e-mail |
 
 Já resolvidas durante a entrega, e listadas aqui porque apareciam em versões anteriores deste
@@ -146,5 +145,8 @@ volátil usado como store de idempotência — hoje há uma instância dedicada 
 [ADR 0006](adr/0006-redis-dedicado-para-idempotencia.md)),
 [#38](https://github.com/fcg-grupo-16/orchestration/issues/38) e
 [#41](https://github.com/fcg-grupo-16/orchestration/issues/41) (probes que matavam container
-saudável) e [#40](https://github.com/fcg-grupo-16/orchestration/issues/40) (deploy que não
-atualizava as imagens do nó).
+saudável), [#40](https://github.com/fcg-grupo-16/orchestration/issues/40) (deploy que não
+atualizava as imagens do nó) e
+[payments-api#19](https://github.com/fcg-grupo-16/payments-api/issues/19) /
+[#20](https://github.com/fcg-grupo-16/payments-api/issues/20) (serviço sem instrumentação — hoje o
+trace da compra fecha e o alvo do Prometheus está `up`).

@@ -5,6 +5,58 @@ Todas as mudanças relevantes deste repositório de orquestração são document
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/)
 e o versionamento adere a [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [0.21.0] - 2026-09-14
+
+### Modificado
+- **A documentação deixa de declarar que não há trace distribuído: a cadeia da COMPRA fecha.** O
+  `payments-api` foi instrumentado em
+  [payments-api#19](https://github.com/fcg-grupo-16/payments-api/issues/19) e
+  [#20](https://github.com/fcg-grupo-16/payments-api/issues/20) (merge `beaae1e`), e a medição no
+  cluster mudou de lado:
+
+  | | Antes | Depois |
+  |---|---|---|
+  | `GET /api/services` do Jaeger | `catalog-api`, `users-api` | **+ `payments-api`** |
+  | traces multi-serviço | **0 de 10** | trace de 9 spans em dois serviços |
+  | `/metrics` do payments | 404 | **200**, 28 famílias |
+  | alvos do Prometheus | UP=3 DOWN=1 | **UP=4 DOWN=0** |
+
+  O trace `12a9febb22840ab46a93a61d4df07983` percorre
+  `catalog-api → RabbitMQ → payments-api → RabbitMQ → catalog-api` num único trace, com
+  `fcg.order.id`, `fcg.payment.status` e `fcg.payment.rule` no span do pagamento.
+  Atualizados: diagrama e ressalvas do README, ADR 0002, item 3 e tabela de pendências do relatório,
+  e os blocos 3b e "O que não prometer" do roteiro do vídeo.
+
+- **O diagrama de arquitetura ganhou a seta OTLP do `payments-api`** e perdeu o rótulo
+  `scrape: 404, target down`. Continua sendo o estado real: a `notifications-function` segue **sem**
+  seta OTLP, porque segue sem instrumentação.
+
+- **`verify-fase3.sh` volta a reprovar qualquer alvo em `down`, e o limiar sobe de 3 para 4.** O
+  script carregava uma exceção que rebaixava o `payments-api` em `down` a simples aviso — correta
+  enquanto o serviço não tinha instrumentação, e perigosa no minuto seguinte: um alvo caído por
+  motivo **real** passaria como benigno e o checklist diria "PRONTO PARA GRAVAR". O limiar `UP >= 3`
+  tinha o mesmo defeito por outro caminho — com quatro alvos, ele passa mesmo com um deles fora do
+  ar. Os quatro são os três serviços ASP.NET mais o próprio Prometheus; a `notifications-function`
+  fica de fora de propósito (`prometheus.io/scrape: "false"`), porque com scale-to-zero o pod vive
+  segundos e é incompatível com o *pull*.
+
+- **O aviso "os painéis ficam vazios até a instrumentação entrar" saiu do README e de dentro do
+  próprio dashboard.** O texto morava em `observability/fcg-overview.json` — e, por geração, em
+  `k8s/41b-grafana-dashboard.yaml` — ou seja, aparecia **na tela** durante a gravação, afirmando que
+  os alvos estão `DOWN` com `404`. No lugar dele ficou a causa que de fato resta para um painel
+  vazio: as queries usam `rate(...[5m])` e sem tráfego recente não há série.
+
+### Notas
+- ⚠️ **A cadeia do CADASTRO continua aberta, e a distinção importa.** O fluxo da compra é
+  `catalog → payments → catalog` e não passa pela Function; o do cadastro é
+  `users-api → notifications-function`. Medido agora: os traces do `users-api` seguem em **0 de 10**
+  multi-serviço, porque a Function não tem OpenTelemetry — o `UserCreatedEvent` sai com contexto e o
+  contexto morre no consumo. É a
+  [notifications-function#14](https://github.com/fcg-grupo-16/notifications-function/issues/14).
+  Por isso os textos afirmam o trace distribuído **da compra**, e não o da plataforma inteira.
+- As entradas 0.17.0 e 0.19.0 continuam descrevendo a cobertura como parcial. **É histórico e fica
+  como está** — elas registram o que era verdade quando foram escritas.
+
 ## [0.20.0] - 2026-09-14
 
 ### Adicionado
