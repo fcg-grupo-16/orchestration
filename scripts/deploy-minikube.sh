@@ -238,6 +238,16 @@ kubectl -n fcg rollout status statefulset/mongodb --timeout=180s
 # Redis (cache distribuído, issue #25). Precisa estar Ready antes dos serviços: os initContainers
 # `wait-for-redis` de users-api/catalog-api bloqueiam até a porta 6379 responder.
 kubectl -n fcg rollout status deploy/redis --timeout=180s
+# Redis de IDEMPOTÊNCIA (issue #35) — instância separada e durável, consumida só pela
+# notifications-function. É StatefulSet, então o comando é `rollout status statefulset/...`:
+# `deploy/` devolveria `NotFound` e, sob `set -e`, mataria o deploy aqui.
+#
+# Não há initContainer esperando por ele em lugar nenhum, e isso é deliberado: quem o consome é a
+# Function, que o KEDA só cria quando JÁ HÁ mensagem na fila. Acrescentar espera lá brigaria com o
+# scale-to-zero, cujo valor é justamente a partida rápida. Se este Redis estiver fora, o store
+# fail-closed manda a mensagem para a dead-letter — que é o comportamento desejado, e não um
+# acidente a ser evitado com espera.
+kubectl -n fcg rollout status statefulset/redis-idempotencia --timeout=180s
 for svc in "${SERVICES[@]}"; do
   kubectl -n fcg rollout status "deploy/${svc}" --timeout=180s
 done
