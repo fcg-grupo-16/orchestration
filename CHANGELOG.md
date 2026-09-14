@@ -5,6 +5,61 @@ Todas as mudanças relevantes deste repositório de orquestração são document
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/)
 e o versionamento adere a [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [0.17.0] - 2026-09-14
+
+### Adicionado
+- **Seção `## Arquitetura` no README**, com diagrama Mermaid da plataforma completa e índice dos
+  ADRs. ⚠️ O diagrama desenha o estado **real**, não o desejado: não há seta OTLP saindo do
+  `payments-api` nem da `notifications-function`, e o scrape do `payments-api` está rotulado como
+  **404, target down**. O diagrama pronto que a issue sugeria trazia essas quatro setas como se
+  existissem. (#31)
+- **5 ADRs em `docs/adr/`** — gateway Kong, observabilidade Opção A, serverless Functions+KEDA,
+  NoSQL em avaliações e cache com invalidação por geração. Formato curto: contexto, decisão,
+  consequências e alternativas descartadas. (#31)
+- **`docs/relatorio-entrega-fase3.md`** e **`docs/roteiro-video.md`**. O roteiro traz uma seção
+  explícita **"O que NÃO prometer na narração"**, com as três afirmações que falhariam ao vivo. (#31)
+
+### Corrigido
+- **O README afirmava, na `main`, algo que a medição desmente: que o Jaeger "mostra o trace
+  distribuído" e que o trace da compra "atravessa `catalog-api → RabbitMQ → payments-api → RabbitMQ
+  → catalog-api` sem código adicional".** Medido no cluster: `GET /api/services` do Jaeger devolve
+  apenas `catalog-api` e `users-api`, e dos 10 traces mais recentes de cada um, **0 de 10** contêm
+  mais de um serviço — a cadeia se parte no `payments-api`, que não tem pacote OpenTelemetry algum
+  embora o manifesto defina `OTEL_SERVICE_NAME` e `OTEL_EXPORTER_OTLP_ENDPOINT` para ele. O texto
+  agora descreve a cobertura como **parcial (2 de 4 serviços)**, com a evidência. Rastreado em
+  [payments-api#20](https://github.com/fcg-grupo-16/payments-api/issues/20) e
+  [notifications-function#14](https://github.com/fcg-grupo-16/notifications-function/issues/14) —
+  esta última **aberta nesta entrega**, porque o `TODO(#6)` no código da Function apontava para uma
+  issue **fechada** e a lacuna não estava sendo rastreada por ninguém. (#31)
+- **A tabela de portas estava quebrada em renderização**: um blockquote fora inserido **no meio**
+  dela, o que em Markdown encerra a tabela — as sete linhas seguintes (payments, RabbitMQ, MongoDB,
+  Redis, Grafana, Prometheus, Jaeger) apareciam como texto solto com pipes na primeira página que o
+  avaliador abre. Reescrita como tabela contígua, com coluna de **port-forward do Kubernetes** além
+  da porta do compose. (#31)
+- **O diagrama "Fluxos orientados a eventos" ainda era o da Fase 2**: mostrava `NotificationsAPI`
+  como consumidor nos dois fluxos — serviço removido na #29 —, contradizendo o diagrama novo três
+  parágrafos acima. (#31)
+- O README dizia que o compose sobe "os 4 microsserviços" (são 3: a Function exige KEDA e não está
+  no compose) e anunciava ".NET 10" para tudo (a `notifications-function` é **.NET 8**). (#31)
+- **Duas contradições que a própria #30 havia criado**: a seção "Versionamento e release de imagens"
+  ainda afirmava que "para o desenvolvimento local continuamos usando a tag `:local`", e a "Forma
+  manual" ensinava `minikube image load` sem avisar do **no-op silencioso**. (#31)
+
+### Notas
+- **O critério "`grep -rn "fcg.local"` só deve achar `api.fcg.local`" foi cumprido no espírito, não
+  na letra.** Restam 5 ocorrências de `users.fcg.local`/`catalog.fcg.local`, e nenhuma é
+  configuração viva: duas são entradas de CHANGELOG que **descrevem a remoção** daqueles hosts, duas
+  estão no ADR 0001 explicando o contexto da Fase 2, e uma é o comentário do deploy que justifica
+  por que o Ingress legado precisa ser apagado explicitamente. Apagá-las destruiria o histórico e a
+  justificativa, que é o oposto do que o critério quer.
+- **`CLAUDE.md` foi atualizado para a Fase 3 mas NÃO é versionado** — é gitignorado globalmente, e a
+  regra do repositório proíbe dar stage nele. O critério de aceite correspondente não pode ser
+  satisfeito por commit.
+- **O PDF do relatório não é versionado e não foi gerado aqui**: nenhum engine LaTeX existe nesta
+  máquina (`pandoc -o .pdf` falha com `'pdflatex' not found`) e o `weasyprint` falha por falta de
+  `libgobject`. O caminho testado e funcional está documentado no próprio relatório: exportar HTML
+  com `pandoc --embed-resources` e imprimir para PDF. O enunciado aceita **PDF ou TXT**.
+
 ## [0.16.0] - 2026-09-13
 
 ### Adicionado
