@@ -98,9 +98,10 @@ requisições por status HTTP, taxa de erro 5xx, top 5 rotas mais lentas e saúd
 > `catalog-api → RabbitMQ → payments-api → RabbitMQ → catalog-api`, com os atributos de negócio
 > (`fcg.order.id`, `fcg.payment.status`, `fcg.payment.rule`) no span do pagamento.
 >
-> ⚠️ **A cadeia do cadastro ainda não fecha** — a `notifications-function` não tem OpenTelemetry, e os
-> traces do `users-api` seguem em 0 de 10 multi-serviço
-> ([notifications-function#14](https://github.com/fcg-grupo-16/notifications-function/issues/14)).
+> **A cadeia do cadastro fecha igualmente**: trace `177e2dcf8e7a`, 5 spans em `users-api` +
+> `notifications-function`. E a compra alcança a notificação: trace
+> `ff866e2a4eb32ae4b59cdc2e9eabf008`, **10 spans em três serviços**. Os quatro serviços da
+> plataforma aparecem no Jaeger.
 
 ### 4. NoSQL
 
@@ -136,7 +137,6 @@ Registradas como issues, e não omitidas:
 
 | Issue | O quê |
 |---|---|
-| [notifications-function#14](https://github.com/fcg-grupo-16/notifications-function/issues/14) | Function sem OpenTelemetry: a cadeia de trace do **cadastro** não fecha |
 | [notifications-function#9](https://github.com/fcg-grupo-16/notifications-function/issues/9) | Confirmação de compra endereçada ao `UserId`, não a um e-mail |
 
 Já resolvidas durante a entrega, e listadas aqui porque apareciam em versões anteriores deste
