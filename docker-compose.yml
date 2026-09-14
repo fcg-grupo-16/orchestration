@@ -15,6 +15,9 @@
 name: fcg
 
 x-jwt-secret: &jwt-secret "FiapCloudGames_Demo_SecretKey_Com_Pelo_Menos_256_Bits_Para_HMAC_SHA256!"
+# Chave de SERVIÇO-A-SERVIÇO (notifications-function#9). DIFERENTE da de cima de propósito: o
+# users-api RECUSA subir se as duas forem iguais, porque a separação de privilégio depende disso.
+x-service-secret: &service-secret "FiapCloudGames_Demo_ServiceKey_DISTINTA_Com_256_Bits_Para_HMAC_SHA256!"
 
 services:
   # ---------------- Infraestrutura ----------------
@@ -191,6 +194,9 @@ services:
       JwtSettings__SecretKey: *jwt-secret
       JwtSettings__Issuer: "FiapCloudGames"
       JwtSettings__Audience: "FiapCloudGames"
+      ServiceAuth__SecretKey: *service-secret
+      ServiceAuth__Issuer: "FiapCloudGames.Servicos"
+      ServiceAuth__Audience: "FiapCloudGames.Servicos"
       RabbitMq__Host: "rabbitmq"
       RabbitMq__Username: "guest"
       RabbitMq__Password: "guest"

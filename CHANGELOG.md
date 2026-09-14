@@ -5,6 +5,40 @@ Todas as mudanças relevantes deste repositório de orquestração são document
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/)
 e o versionamento adere a [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [0.24.0] - 2026-09-14
+
+### Adicionado
+- **Credencial SERVIÇO-A-SERVIÇO, com chave de assinatura própria** — contrato de configuração da
+  [notifications-function#9](https://github.com/fcg-grupo-16/notifications-function/issues/9), em que
+  a Function passa a resolver o e-mail do comprador num endpoint interno do `users-api` em vez de
+  endereçar a confirmação de compra ao `UserId`.
+
+  | onde | chave |
+  |---|---|
+  | ConfigMap do `users-api` | `ServiceAuth__Issuer`, `ServiceAuth__Audience` (`FiapCloudGames.Servicos`) |
+  | `users-api-secret` e `notifications-function-secret` | `ServiceAuth__SecretKey` (idêntica entre os dois) |
+  | `docker-compose.yml` | âncora `x-service-secret` |
+
+  **A chave é obrigatoriamente DIFERENTE da `JwtSettings__SecretKey`, e o `users-api` recusa subir se
+  forem iguais.** A chave dos usuários é compartilhada entre `users-api`, `catalog-api` e a
+  credencial do Kong: quem a tem assina qualquer token, inclusive de `Administrador`. Dá-la à
+  Function para ler um e-mail converteria um componente serverless em portador de credencial
+  administrativa. Decisão e alternativas em
+  [ADR 0007](docs/adr/0007-consulta-de-contato-servico-a-servico.md).
+
+  O `issuer` próprio não é cosmético: o plugin `jwt` do Kong casa a credencial pela claim `iss`
+  (`key: "FiapCloudGames"`), então **não existe credencial na borda** para `FiapCloudGames.Servicos`
+  — o token de serviço só vale na rede interna. O `catalog-api` também o rejeita.
+
+### Notas
+- ⚠️ **Ordem de implantação.** O `ServiceAuth` é OPCIONAL no `users-api` de propósito: a configuração
+  mora aqui e a imagem pode ser implantada antes. Sem ela, apenas o endpoint de contato fica
+  indisponível, e devolvendo **401** — medido que a alternativa (política apontando para esquema
+  ausente) faz o endpoint responder **500**, e 5xx por configuração faltando contaminaria a taxa de
+  erro, que é um dos painéis obrigatórios da entrega.
+- Rotação: a chave de serviço segue o mesmo caminho das demais — exporte `SERVICE_AUTH_SECRET_KEY`,
+  rode `./scripts/seal-secrets.sh` e comite o `k8s/05-sealed-secrets.yaml` regenerado.
+
 ## [0.23.0] - 2026-09-14
 
 ### Corrigido

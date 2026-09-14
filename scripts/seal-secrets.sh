@@ -23,6 +23,11 @@ CONTROLLER_NS="kube-system"
 # JwtSettings__SecretKey DEVE ser idêntica em users-api e catalog-api (o users emite o JWT,
 # o catalog valida). Por isso é uma única variável, cifrada nos dois SealedSecrets.
 JWT_SECRET_KEY="${JWT_SECRET_KEY:-FiapCloudGames_Demo_SecretKey_Com_Pelo_Menos_256_Bits_Para_HMAC_SHA256!}"
+# Chave de SERVIÇO-A-SERVIÇO (notifications-function#9). DEVE ser DIFERENTE da JWT_SECRET_KEY: a
+# separação de privilégio depende disso, e o users-api recusa subir se as duas forem iguais. Quem
+# tiver esta chave consegue apenas consultar o contato de um usuário; com a JWT_SECRET_KEY,
+# conseguiria assinar um token de Administrador.
+SERVICE_AUTH_SECRET_KEY="${SERVICE_AUTH_SECRET_KEY:-FiapCloudGames_Demo_ServiceKey_DISTINTA_Com_256_Bits_Para_HMAC_SHA256!}"
 MONGO_USERS_CONN="${MONGO_USERS_CONN:-mongodb://mongodb:27017/?replicaSet=rs0}"
 MONGO_CATALOG_CONN="${MONGO_CATALOG_CONN:-mongodb://mongodb:27017/?replicaSet=rs0}"
 MONGO_PAYMENTS_CONN="${MONGO_PAYMENTS_CONN:-mongodb://mongodb:27017/?replicaSet=rs0}"
@@ -120,15 +125,17 @@ seal() {
   echo "# são de DEMONSTRAÇÃO. Para regenerar/rotacionar: ./scripts/seal-secrets.sh"
   echo "#"
   echo "# JwtSettings__SecretKey é IDÊNTICA em users-api-secret e catalog-api-secret (JWT parity)."
+  echo "# ServiceAuth__SecretKey é IDÊNTICA em users-api-secret e notifications-function-secret, e"
+  echo "# obrigatoriamente DIFERENTE da JwtSettings__SecretKey (separação de privilégio, #9)."
   seal rabbitmq-secret          ""                  "RABBITMQ_DEFAULT_USER=$RABBIT_USER" "RABBITMQ_DEFAULT_PASS=$RABBIT_PASS"
-  seal users-api-secret         "users-api"         "MongoDbSettings__ConnectionString=$MONGO_USERS_CONN" "Redis__ConnectionString=$REDIS_CONN"  "JwtSettings__SecretKey=$JWT_SECRET_KEY" "RabbitMq__Username=$RABBIT_USER" "RabbitMq__Password=$RABBIT_PASS"
+  seal users-api-secret         "users-api"         "MongoDbSettings__ConnectionString=$MONGO_USERS_CONN" "Redis__ConnectionString=$REDIS_CONN"  "JwtSettings__SecretKey=$JWT_SECRET_KEY" "ServiceAuth__SecretKey=$SERVICE_AUTH_SECRET_KEY" "RabbitMq__Username=$RABBIT_USER" "RabbitMq__Password=$RABBIT_PASS"
   seal catalog-api-secret       "catalog-api"       "MongoDbSettings__ConnectionString=$MONGO_CATALOG_CONN" "Redis__ConnectionString=$REDIS_CONN" "JwtSettings__SecretKey=$JWT_SECRET_KEY" "RabbitMq__Username=$RABBIT_USER" "RabbitMq__Password=$RABBIT_PASS"
   seal payments-api-secret      "payments-api"      "MongoDbSettings__ConnectionString=$MONGO_PAYMENTS_CONN" "RabbitMq__Username=$RABBIT_USER" "RabbitMq__Password=$RABBIT_PASS"
   # Fase 3 — notifications-function (serverless). As chaves seguem a convenção de APP SETTINGS do
   # host de Azure Functions, não a de ASP.NET Core dos demais serviços: `RabbitMqConnection` é o
   # nome literal referenciado pelo atributo [RabbitMQTrigger(..., ConnectionStringSetting = ...)].
   # `Redis__ConnectionString` aponta para o Redis DEDICADO de idempotência (#35), não para o de cache.
-  seal notifications-function-secret "notifications-function" "RabbitMqConnection=$RABBIT_CONNECTION" "MongoDbSettings__ConnectionString=$MONGO_FUNCTION_CONN" "Redis__ConnectionString=$REDIS_IDEMPOTENCIA_CONN"
+  seal notifications-function-secret "notifications-function" "RabbitMqConnection=$RABBIT_CONNECTION" "MongoDbSettings__ConnectionString=$MONGO_FUNCTION_CONN" "Redis__ConnectionString=$REDIS_IDEMPOTENCIA_CONN" "ServiceAuth__SecretKey=$SERVICE_AUTH_SECRET_KEY"
   # Credencial do scaler do KEDA (#29). Chave `host` é o nome que o TriggerAuthentication espera.
   # Selada como as demais: a issue #29 propunha um Secret em TEXTO CLARO versionado, o que seria a
   # única credencial em claro do repositório.
