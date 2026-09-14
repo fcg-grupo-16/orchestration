@@ -45,16 +45,60 @@ spec:
             limits:
               cpu: 500m
               memory: 512Mi
+          # LIVENESS POR TCP, não por `exec mongosh` (issue #41).
+          #
+          # O `mongosh` é um cliente Node: cada invocação sobe um runtime inteiro. Medido neste
+          # cluster, com o nó OCIOSO: mediana 525 ms, máximo 2999 ms — para um simples `ping`. Sob
+          # concorrência (que é o padrão dos scripts de teste deste repo, vários `kubectl exec
+          # mongosh` ao mesmo tempo) três invocações simultâneas levaram 3,8 s, 45,9 s e 73,2 s.
+          # Com `timeoutSeconds: 10`, o kubelet registrava
+          #   `Liveness probe failed: command timed out ... timed out after 10s`
+          #   `Killing  Container mongodb failed liveness probe, will be restarted`
+          # e matava o container — 17 restarts acumulados, com `exitCode: 137` e `reason: Error`.
+          # É o par EVENTO + `reason` que identifica morte por probe: `reason: Error` significa sinal
+          # externo, e o evento diz qual. Não use "não há eventos de OOM" como prova do contrário —
+          # medido nesta base: um container pode terminar com `reason: OOMKilled` no status e o
+          # `kubectl get events` mostrar ZERO eventos de OOM (o kubelet grava no estado do container,
+          # e o evento nem sempre é emitido, além de expirar).
+          #
+          # ⚠️ Sobre memória, o que se sabe e o que não se sabe: os limites ficam como estão porque
+          # nenhum dos 17 restarts foi OOM. Mas forçando QUATRO `mongosh` concorrentes dentro do
+          # container (quatro runtimes Node a mais, contra `limits.memory: 512Mi`), o kernel matou o
+          # mongod com `reason: OOMKilled` — reproduzido. Isso é carga artificial, não operação
+          # normal: os scripts deste repo executam um `mongosh` por vez, em traps de limpeza. Fica
+          # registrado para quem for depurar um OOM aqui não procurar no lugar errado.
+          #
+          # O mesmo teste por TCP: 20 conexões, 0 falhas, mediana 2,0 ms, máximo 19,1 ms. ~260x mais
+          # barato na mediana, e sem subir runtime nenhum.
+          #
+          # É o contrato certo para uma liveness: ela responde "o processo está vivo?". A pergunta
+          # semântica — "o replica set aceita escrita?" — é da readiness, abaixo, onde falhar apenas
+          # tira o Pod do Service em vez de MATAR o banco do qual todos os serviços dependem.
           livenessProbe:
-            exec:
-              command: ["mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+            tcpSocket:
+              port: 27017
             initialDelaySeconds: 30
             periodSeconds: 15
-            timeoutSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
           # Inicia o replica set rs0 de forma idempotente e só reporta Ready quando o nó já é
           # PRIMARY gravável: se o RS não existe (rs.status() lança), dispara rs.initiate e falha
           # (quit 1) para tentar de novo; se existe, quit 0 apenas quando db.hello().isWritablePrimary.
           # Assim o Pod não entra nos endpoints antes de aceitar writes/transações.
+          #
+          # ⚠️ Esta probe CONTINUA sendo `exec mongosh`, e tem de continuar: é ela que faz o
+          # bootstrap do `rs0`. Trocá-la por TCP quebraria o replica set, que é pré-requisito do
+          # outbox transacional. O que muda é a TOLERÂNCIA.
+          #
+          # `failureThreshold: 12` (era 6) segue a mesma filosofia do healthcheck do compose, que usa
+          # `retries: 10` justamente por conhecer a lentidão do mongosh. São ~2 min de indisponibilidade
+          # tolerada antes de o Pod sair dos endpoints — e sair dos endpoints é o que desencadeia a
+          # cascata: os serviços perdem o banco, as probes deles estouram, e tudo reinicia junto.
+          #
+          # `timeoutSeconds: 8` fica ABAIXO de `periodSeconds: 10` de propósito. Timeout maior que o
+          # período faz as execuções se sobreporem, e cada uma sobe outro runtime Node — exatamente a
+          # contenção que esta issue trata. `periodSeconds` fica em 10 para não atrasar o bootstrap do
+          # rs0 num cluster novo (a primeira tentativa acontece em t+5s e as seguintes a cada 10s).
           readinessProbe:
             exec:
               command:
@@ -64,8 +108,8 @@ spec:
                 - "try { rs.status() } catch (e) { try { rs.initiate({_id: 'rs0', members: [{ _id: 0, host: 'mongodb:27017' }] }) } catch (e2) {}; quit(1) } quit(db.hello().isWritablePrimary ? 0 : 1)"
             initialDelaySeconds: 5
             periodSeconds: 10
-            timeoutSeconds: 10
-            failureThreshold: 6
+            timeoutSeconds: 8
+            failureThreshold: 12
   volumeClaimTemplates:
     - metadata:
         name: mongo-data        # vira o nome base do PVC: mongo-data-mongodb-0

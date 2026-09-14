@@ -91,18 +91,38 @@ spec:
             limits:
               cpu: 500m
               memory: 512Mi
+          # PROBES (issue #38) — valores EXPLÍCITOS, nunca os defaults.
+          #
+          # `timeoutSeconds` omitido vale **1 segundo** no Kubernetes. Em repouso este serviço
+          # responde em milissegundos — medido aqui, n=30: máximo de 35 ms em `/health/ready`.
+          # Este serviço NÃO expõe o `/health` agregado (responde 404); só `/health/live` e `/health/ready`.
+          #
+          # ⚠️ Ao contrário do `users-api`, este container NUNCA foi morto por liveness. O que se
+          # observou sob contenção foi a READINESS estourando o teto de 1 s — `Readiness probe
+          # failed: Get ".../health/ready": context deadline exceeded`, 20 ocorrências
+          # agregadas num único episódio. Readiness falhando não mata o Pod, mas o **tira do
+          # Service**, e é isso que propaga a cascata: quem depende dele perde o endpoint.
+          # Por isso o conserto aqui é dar margem, não trocar caminho — os caminhos já estavam
+          # certos (`/health/live` para liveness, `/health/ready` para readiness).
+          #
+          # 5 s dá ~140x de folga sobre o pior caso medido (35 ms), sem mascarar serviço travado: com
+          # failureThreshold 3, um travamento real ainda é detectado em ~45 s.
           livenessProbe:
             httpGet:
               path: /health/live
               port: 8080
             initialDelaySeconds: 15
             periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
           readinessProbe:
             httpGet:
               path: /health/ready
               port: 8080
             initialDelaySeconds: 10
             periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
 ---
 apiVersion: v1
 kind: Service
