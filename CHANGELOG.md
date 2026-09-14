@@ -5,6 +5,116 @@ Todas as mudanças relevantes deste repositório de orquestração são document
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/)
 e o versionamento adere a [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [0.16.0] - 2026-09-13
+
+### Adicionado
+- **`scripts/verify-fase3.sh`**: checklist automatizado da entrega, consultando o cluster. Confere o
+  requisito, não o objeto — a diferença importa: três requisitos da Fase 3 tinham manifesto aplicado
+  e pod `Running` e mesmo assim estavam **invisíveis** no cluster porque o nó servia uma imagem
+  obsoleta. Por isso o script mede **saúde dos targets do Prometheus** (e não "o Deployment existe"),
+  os **índices** de `catalogdb.avaliacoes` (e não "a coleção existe") e compara o `imageID` do pod com
+  o `Id` do host. (#30)
+- **`.github/scripts/validar-definitions-rabbitmq.py`**: valida a topologia declarativa do broker no
+  CI — JSON, dead-lettering, bindings órfãos, filas inalcançáveis e usuários. ⚠️ A checagem olha a
+  **policy**, não `x-dead-letter-exchange` nos `arguments` da fila: os argumentos participam da
+  equivalência do `queue.declare` e o MassTransit declara estas filas **sem** argumento nenhum, então
+  uma checagem por `arguments` **reprovaria as duas filas corretas**. Medido. O validador é
+  mutation-testado: reprova as 7 mutações (policy removida, DLX inexistente, policy casando a própria
+  DLQ, binding do DLX ausente, fila sem binding, binding órfão, lista de usuários vazia) e o JSON
+  quebrado, e passa no arquivo real. (#30)
+- **`.yamllint` versionado** e o step de lint agora **bloqueante**. Antes rodava `-d relaxed` com
+  `continue-on-error`: acusava **441** achados e saía **0** — não era gate, era ruído. A config
+  desliga `line-length` (os comentários longos dos manifestos são deliberados e eram a origem dos 441)
+  e promove o resto a erro. Nesta base o resultado é limpo. (#30)
+- **shellcheck no CI.** O `bash -n` só faz **parse**: nesta mesma base um `if [ x ] != [ y ]` passou
+  pelo `bash -n` e só o shellcheck pegou. (#30)
+- **`helm template` dos values do Kong no CI**, contra `gateway/kong-values.yaml` — o caminho real; o
+  arquivo fica fora de `k8s/` de propósito, por não ser manifesto. (#30)
+
+### Modificado
+- **Imagens marcadas pelo COMMIT do repositório de origem**, não mais pela tag móvel `:local` (#40).
+  Com tag móvel, `minikube image load` vira **no-op silencioso** quando a tag já existe no nó e um
+  container a referencia — `minikube image rm` recusa sem `--force`, o `load` não reclama, o pod segue
+  `Running` servindo o binário antigo e todo `kubectl get` diz que está tudo certo. Medido: com tag
+  **nova** o load sempre funciona (id no nó idêntico ao do host), porque não há o que colidir. É
+  conserto estrutural, não remediação: mudar de commit muda o `image:` do spec e o rollout acontece
+  naturalmente, sem `rollout restart` — que, também medido, **não resolve nada** quando o spec não
+  muda. O `fcg-rabbitmq` entrou no mesmo esquema, e não é detalhe: a topologia das filas vem do
+  `definitions.json` assado na imagem, então um no-op ali serviria uma topologia velha, e fila
+  faltando significa evento descartado em silêncio. (#30)
+  Os arquivos de `k8s/` continuam com `:local` — YAML puro, validável offline pelo CI; a substituição
+  acontece numa **cópia renderizada**, com guarda que aborta se alguma substituição não pegar.
+  A tag do broker é escopada ao **contexto de build** (`docker/rabbitmq`), não ao repositório
+  inteiro: escopada no repo, qualquer alteração aqui — um comentário num script — gerava tag nova e
+  **recriava o pod do RabbitMQ**, churn de conexões e filas por mudança em arquivo nenhum do
+  contexto dele. Medido: o pod do broker foi recriado num deploy cujas únicas alterações estavam em
+  `scripts/` e no CI. Para os serviços não há escopo — o contexto de build é o repositório inteiro.
+- O deploy remove também a **imagem** legada `notifications-api:local` do nó; até aqui só os objetos
+  do Kubernetes eram limpos e a imagem seguia ocupando espaço. (#30)
+- **`scripts/smoke-test.sh` reescrito**: 9 casos em dois modos. `MODO=compose` roda as asserções
+  **dentro de um container** na rede do compose (as portas do host são remapeadas por máquina no
+  override gitignored); `MODO=gateway` roda **no host**, contra o port-forward do Kong. Cobre os
+  requisitos da fase: 401 na borda sem token, cadastro, login, catálogo com token, compra assíncrona
+  até sair de `Pending`, avaliação em documento flexível com `mediaNota`, chave no Redis e
+  `http_server_request_duration_seconds` no `/metrics`. (#30)
+- **As 4 atribuições fail-open do `smoke-test.sh` foram eliminadas.** Elas viviam dentro de um
+  heredoc citado, **invisíveis ao shellcheck**, e o `sh` do Alpine não tem `pipefail`: em
+  `TOKEN=$(curl … | jq …)` o status é o do **jq**, então um curl morto virava `TOKEN="null"` e o teste
+  seguia reportando sucesso. O padrão novo captura corpo e código sem pipe e **asserta o código**
+  antes de extrair. (#30)
+- **`scripts/deploy-minikube.sh`**: espera o `ScaledObject` com
+  `kubectl wait --for=condition=Ready` em vez de `rollout status` na Function — que esperaria para
+  sempre por um pod que **corretamente** não existe com a fila vazia. A condição é **necessária e não
+  suficiente**, e está anotada como tal: um `queueName` inexistente também dá `Ready=True` até o
+  primeiro poll. Mensagem final passou a apontar o serverless e o `verify-fase3.sh`. (#30)
+- **`kubeconform` no CI aponta para o catálogo de CRDs da comunidade**: os 13 recursos antes pulados
+  passam a ser validados. ⚠️ O ganho **não** é uniforme, e o README registra a medição: fecha o caso do
+  KEDA (campo inventado no `spec` do `ScaledObject` agora reprova) e **não** fecha o do Kong — o schema
+  do `KongPlugin` não trava `additionalProperties` no topo e trata `config` como objeto livre, então
+  um typo em `claims_to_verify` **continua passando**. A validação do gateway segue comportamental. (#30)
+
+### Corrigido
+- **A limpeza de resíduo do `smoke-test.sh` não limpava a avaliação.** `_id` é um `ObjectId`, e
+  `deleteOne({_id:'<hex>'})` não casa nada e sai **0** — a limpeza parecia funcionar e vazava uma
+  avaliação por execução (medido: a coleção foi de 2 para 3 numa execução "limpa"). Corrigido com
+  `ObjectId(...)` e verificado: `usuarios` e `avaliacoes` têm a mesma contagem antes e depois. (#30)
+- **O relatório do `smoke-test.sh` tinha dois furos no CAMINHO DE FALHA, com modos opostos — a
+  sétima e a oitava instância da classe `set -e`/`pipefail` desta entrega, ambas em código novo.**
+  Se o corpo morresse antes de imprimir qualquer caso, `$SAIDA` ficava só com as linhas de placar:
+  o `grep -v` não casava nada, saía 1, o `pipefail` propagava e o `set -e` **matava o script** sem
+  relatório. E sem a linha `FALHAS=`, a aritmética `$(( FALHAS + ))` **não** matava nada — o bash
+  imprime "arithmetic syntax error", segue em frente e deixa `FALHAS=0`, de modo que uma execução
+  que **falhou** sairia com **exit 0 e "TODOS OS CASOS PASSARAM"**. Este é o pior dos dois: um
+  teste que reporta sucesso quando quebrou não é um teste. Medidos em isolamento antes e depois do
+  conserto. (#30)
+- **Falha de conexão no `smoke-test.sh` reprovava sem dizer por quê.** Sob `set -e`, um curl que não
+  conecta matava o script antes de registrar qualquer coisa, e o relatório saía só com o sentinela de
+  "não consegui ler o placar". Agora vira código `000` com o erro do curl no corpo. (#30)
+- **A poda de tags antigas no nó era um no-op silencioso — por DOIS bugs em sequência, e o
+  conserto do primeiro revelou o segundo.** (#30)
+  1. **`minikube ssh` lê o stdin.** Dentro de um `while read` alimentado por arquivo, ele consome o
+     resto da entrada: o laço roda **uma** vez e as demais linhas somem, sem erro e com exit 0.
+     Medido em isolamento: laço de 3 linhas com `minikube ssh` dentro executa **1** iteração; com
+     `</dev/null`, **3**. `minikube image load` **não** tem esse comportamento (também medido) —
+     por isso o laço de carga sempre funcionou e só a poda falhava.
+  2. Com o `</dev/null` posto, a iteração 2 passou a executar e expôs a **sexta instância do
+     `set -e` + `pipefail`** desta entrega: quando um serviço não tem tag antiga (o caso comum, um
+     deploy sem mudança naquele repo), o `grep -v` não casa nada e sai 1, o `pipefail` propaga e o
+     `set -e` **mata o script** ali. Medido: com `set -euo pipefail` o laço morre na iteração 2 com
+     exit 1; sem o `-e`, completa. O sintoma era mudo — a última linha era "Podando tags antigas no
+     nó" e o `==> Pods:` seguinte nunca aparecia; o exit code ficava mascarado por um pipe no
+     comando que invocava o script.
+  Corrigido com `</dev/null` em todo `minikube ssh`, candidatas coletadas em variável com
+  `|| true`, listagem do nó feita uma única vez, e a recusa do `docker rmi` **reportada** em vez de
+  engolida.
+  ⚠️ Três hipóteses foram refutadas por medição antes de chegar a estas duas: códigos ANSI na saída
+  (os bytes crus mostram só `\r\n`), posição do bloco no script (está no caminho executado) e
+  referência de container bloqueando o `rmi` (`docker rmi` devolve `Untagged` e exit 0 mesmo com
+  container **em execução** — o `must force` da #40 era outra operação, `minikube image rm` sobre a
+  única referência da imagem).
+- `k8s/24-notifications-function.yaml`: indentação do comentário final, o único achado do yamllint
+  com a config nova. (#30)
+
 ## [0.15.0] - 2026-09-13
 
 ### Adicionado
