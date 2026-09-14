@@ -123,12 +123,27 @@ Sobe RabbitMQ, MongoDB e os 4 microsserviços. Portas expostas no host:
 > MongoDB exigem replica set. Ao editar o `docker-compose.yml`, **não** remova o `--replSet rs0` nem
 > o `?replicaSet=rs0` das connection strings, ou o cadastro de usuários passa a falhar.
 
-### Testar os dois fluxos de ponta a ponta
+### Testar os fluxos de ponta a ponta
 
 ```bash
-./scripts/smoke-test.sh          # requer jq
+./scripts/smoke-test.sh                 # 9 casos; requer docker (curl/jq rodam em container)
 docker compose logs payments-api
 ```
+
+O mesmo script serve os dois ambientes, e **não roda no mesmo lugar** nos dois — de propósito:
+
+| Modo | Como roda | O que prova |
+|---|---|---|
+| `MODO=compose` (padrão) | as asserções rodam **dentro de um container** na rede do compose, usando os nomes de serviço (`http://users-api:8080`) | o **código**: cadastro, login, compra assíncrona, avaliações, cache, métricas |
+| `MODO=gateway` | rodam **no host**, contra o port-forward do Kong | o **gateway**: 401 sem token na borda, roteamento e JWT, além de tudo acima |
+
+> Rodar em container no modo compose evita depender das portas publicadas no host: elas são
+> remapeadas por máquina no `docker-compose.override.yml` (gitignored), então bater em
+> `localhost:8081` seria frágil — pela rede do compose, os nomes de serviço são estáveis. No modo
+> gateway é o inverso: quem tem o port-forward aberto é o host.
+
+O teste **grava dados reais** (conta, pedido, avaliação) e os remove no final. A limpeza é
+verificada: `usuarios` e `avaliacoes` têm a mesma contagem antes e depois de uma execução.
 
 Derrubar tudo:
 
@@ -162,10 +177,24 @@ MongoDB, `Deployment`+`Service` do RabbitMQ) e, para cada microsserviço, `Confi
 ### Forma rápida (script)
 
 ```bash
-./scripts/deploy-minikube.sh
+./scripts/deploy-minikube.sh      # sobe tudo: Kong, KEDA, infra, serviços e observabilidade
+./scripts/verify-fase3.sh         # checklist da entrega — rode antes de gravar
 ```
 
-Faz o build das imagens `:local`, carrega no minikube e aplica os manifestos.
+Faz o build das imagens, carrega no minikube e aplica os manifestos, instalando também o Kong
+(Helm, chart pinado) e o KEDA (URL pinada) antes do `apply`, porque os CRDs deles são pré-requisito
+dos manifestos.
+
+> **As imagens são marcadas pelo COMMIT do repositório de origem** (`users-api:5f78b28`), não por
+> uma tag móvel `:local`. O motivo é concreto: com tag móvel, `minikube image load` vira **no-op
+> silencioso** quando a tag já existe no nó e um container a referencia — o pod segue `Running`
+> servindo o binário antigo e todo `kubectl get` diz que está tudo certo. Foi assim que três
+> requisitos da Fase 3 ficaram invisíveis no cluster (issue #40). Com tag nova a cada commit não há
+> colisão, e mudar de commit muda o `image:` do spec, disparando o rollout naturalmente.
+>
+> Os arquivos em `k8s/` continuam com `:local`: são YAML puro, validável offline pelo CI. A
+> substituição acontece numa **cópia renderizada** na hora do deploy. Se você aplicar os manifestos
+> à mão (`kubectl apply -R -f k8s/`), o cluster volta para `:local` — use o script.
 
 ### Forma manual
 
@@ -731,6 +760,34 @@ O `users-api` cria um administrador na inicialização:
 - **E-mail:** `admin@fcg.com`
 - **Senha:** `Admin@123456`
 
+## Scripts
+
+Todos em `scripts/`, todos idempotentes e seguros para rodar mais de uma vez.
+
+| Script | O que faz | Quando usar |
+|---|---|---|
+| `deploy-minikube.sh` | build + carga das imagens (tag por commit), instala Kong e KEDA, aplica os manifestos | subir a plataforma no cluster |
+| `undeploy-minikube.sh` | remove a plataforma, os controllers e os CRDs | limpar o cluster |
+| `verify-fase3.sh` | **checklist da entrega**: 24 checagens dos 5 requisitos, consultando o cluster | antes de gravar o vídeo |
+| `smoke-test.sh` | 9 casos de ponta a ponta (11 asserções), em `MODO=compose` ou `MODO=gateway` | validar os fluxos |
+| `gateway-test.sh` | matriz de aceite do Kong: 17 asserções — 15 na matriz e 2 de isolamento de rate limit, medidas com **dois pods em IPs distintos** | validar o gateway |
+| `keda-test.sh` | ciclo 0→1→0 do scale-to-zero (12 asserções) | validar o serverless |
+| `seal-secrets.sh` | gera os `SealedSecret` de `k8s/05-sealed-secrets.yaml` | ao trocar um segredo, ou após `minikube delete` |
+| `gen-dashboard-configmap.sh` | regenera o ConfigMap do dashboard a partir do JSON | ao editar o dashboard |
+
+A sequência completa, num cluster do zero:
+
+```bash
+minikube delete && minikube start
+./scripts/seal-secrets.sh          # a chave do controller é NOVA depois do delete
+./scripts/deploy-minikube.sh
+./scripts/verify-fase3.sh          # deve terminar em "PRONTO PARA GRAVAR"
+```
+
+> `verify-fase3.sh` e `smoke-test.sh` **não se substituem**: o primeiro confere que os componentes
+> estão lá e servindo o binário certo; o segundo exercita os fluxos de verdade. Um cluster pode
+> passar no primeiro e reprovar no segundo.
+
 ## CI — validação de compose e manifestos
 
 Todo **push na `main`** e **todo pull request** dispara o workflow
@@ -740,8 +797,11 @@ Todo **push na `main`** e **todo pull request** dispara o workflow
 | Step | Comando | O que pega |
 |---|---|---|
 | docker-compose | `docker compose -f docker-compose.yml config -q` | sintaxe/estrutura do compose |
-| kubeconform | `kubeconform -strict -summary -ignore-missing-schemas -verbose k8s/` | schema rigoroso dos manifestos (offline) — **mas ver a ressalva abaixo sobre os CRs do Kong e do KEDA** |
-| yamllint | `yamllint -d relaxed …` | estilo de YAML (**não-bloqueante** por enquanto) |
+| kubeconform | `kubeconform -strict … -schema-location default -schema-location <catálogo de CRDs>` | schema rigoroso dos manifestos, **incluindo os CRs** — ver a ressalva abaixo sobre até onde isso vai |
+| shellcheck | `shellcheck -S warning scripts/*.sh` | semântica dos scripts (o `bash -n` só faz parse) |
+| RabbitMQ | `python3 .github/scripts/validar-definitions-rabbitmq.py …` | topologia das filas: JSON, dead-lettering, bindings órfãos |
+| Kong | `helm template kong/kong --version … -f gateway/kong-values.yaml` | values inválidos do gateway |
+| yamllint | `yamllint -c .yamllint …` | YAML malformado (**bloqueante**, com a config versionada) |
 
 > **Por que kubeconform e não `kubectl --dry-run=client`?** Apesar do nome, o dry-run
 > "client" do kubectl moderno **não é offline**: ele precisa de _discovery_ do apiserver
@@ -752,35 +812,59 @@ Todo **push na `main`** e **todo pull request** dispara o workflow
 > O CI usa apenas `-f docker-compose.yml` para ser **determinístico**: valida só o
 > arquivo versionado, sem influência de um `docker-compose.override.yml` local
 > (gitignored) — o Compose só o carrega automaticamente se ele existir. O `kubeconform`
-> roda em versão **pinada** (nunca `latest`) e o `-ignore-missing-schemas` evita
-> falso-negativo em CRDs sem schema conhecido — é o caso do `SealedSecret`
-> (`k8s/05-sealed-secrets.yaml`), que o kubeconform **pula** em vez de reprovar.
+> roda em versão **pinada** (nunca `latest`).
+
+**Os CRs de terceiros deixaram de ser pulados** — mas o ganho não é uniforme, e vale saber onde ele
+para. Antes, `-ignore-missing-schemas` fazia o kubeconform **pular** todo CR sem schema conhecido:
+dos **48** recursos de `k8s/`, **13** eram invisíveis ao CI (6 `SealedSecret`, 4 `KongPlugin`, 1
+`KongConsumer`, `ScaledObject` e `TriggerAuthentication`) — `k8s/50-keda-notifications.yaml` inteiro
+não era validado. Apontando o kubeconform também para o
+[catálogo da comunidade](https://github.com/datreeio/CRDs-catalog), os 48 passam a ser validados.
+
+Medido com a versão pinada do CI (kubeconform v0.6.7), mutando os manifestos:
+
+| Mutação | Sem catálogo | Com catálogo |
+|---|---|---|
+| `k8s/` como está | 35 válidos, **13 pulados** | **48 válidos, 0 pulados** |
+| campo inventado no `spec` do `ScaledObject` | passa | **reprova** |
+| campo inventado no topo do `KongPlugin` | passa | **passa** |
+| `claims_to_verifyy` dentro de `config` | passa | **passa** |
+| `plugin: 123` (tipo errado) | passa | reprova |
+| `KongPlugin` sem o campo `plugin` | passa | reprova |
+
+> ⚠️ **O caso do Kong continua aberto, e de propósito.** O schema do `KongPlugin` não declara
+> `additionalProperties: false` no topo e trata `config` como objeto livre — tem de tratar, já que o
+> conteúdo de `config` varia por plugin. Então **um typo em `claims_to_verify` ainda passa verde**, o
+> Kong rejeita o plugin, e o gateway devolve 401 sem token (parece funcionar) e 401 **também com
+> token válido**.
 >
-> ⚠️ **O mesmo vale para os CRs do Kong e do KEDA, e a consequência é maior.** Dos **48**
-> recursos de `k8s/`, **13** são pulados: os 6 `SealedSecret`, os 4 `KongPlugin`, o
-> `KongConsumer`, e o `ScaledObject` + `TriggerAuthentication` do KEDA. Em `k8s/gateway/` só o Secret
-> e os 3 Ingresses chegam a ser validados; **`k8s/50-keda-notifications.yaml` é invisível ao CI por
-> inteiro** — os dois documentos dele são CRs.
+> O caso do KEDA, esse fechou — e era o pior: um campo errado no scaler passava verde e o Deployment
+> ficava parado em **0 réplica**, indistinguível de scale-to-zero funcionando, só que nada acorda
+> quando chega mensagem. A condição `Ready` **não** basta para distinguir: credencial irresolvível dá
+> `Ready=False`, mas `queueName` inexistente dá `Ready=True` até o primeiro poll do trigger.
 >
-> Os dois modos de falha enganam, cada um do seu jeito:
->
-> - **Kong:** um typo em `claims_to_verify` passa verde, o Kong rejeita o plugin, e o gateway devolve
->   401 sem token (parece funcionar) e 401 **também com token válido**.
-> - **KEDA:** um campo errado no scaler passa verde no CI, e o Deployment segue parado em **0
->   réplica** — indistinguível de scale-to-zero funcionando, só que nada acorda quando chega
->   mensagem. A condição `Ready` **não** basta para distinguir: credencial irresolvível dá
->   `Ready=False`, mas `queueName` inexistente dá `Ready=True` até o primeiro poll do trigger.
->
-> A validação real é comportamental, contra um cluster: `scripts/gateway-test.sh` para o gateway e
-> `scripts/keda-test.sh` para o scale-to-zero.
+> Por isso a validação comportamental continua obrigatória: `scripts/gateway-test.sh` para o gateway
+> e `scripts/keda-test.sh` para o scale-to-zero. O CI não substitui nenhum dos dois.
 
 Para reproduzir o CI localmente:
 
 ```bash
-docker compose -f docker-compose.yml config -q             # step 1
-kubeconform -strict -summary -ignore-missing-schemas k8s/  # step 2 (brew install kubeconform)
-bash -n scripts/*.sh                                       # step 3 (sintaxe dos scripts)
+docker compose -f docker-compose.yml config -q                       # step 1
+kubeconform -strict -summary \
+  -schema-location default \
+  -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+  -ignore-missing-schemas k8s/                                       # step 2
+bash -n scripts/*.sh && shellcheck -S warning scripts/*.sh           # step 3
+python3 .github/scripts/validar-definitions-rabbitmq.py \
+  docker/rabbitmq/definitions.json                                   # step 4
+helm template kong kong/kong --version 3.4.1 \
+  --namespace kong -f gateway/kong-values.yaml > /dev/null           # step 5
+yamllint -c .yamllint k8s/ gateway/ docker-compose.yml .github/      # step 6
 ```
+
+> `-schema-location default` precisa ser repetido: ao passar qualquer `-schema-location`, o
+> kubeconform **substitui** a lista padrão em vez de acrescentar — sem ele, `Deployment`, `Service`
+> e companhia ficariam sem schema e seriam pulados, exatamente o oposto do pretendido.
 
 ## Como contribuir
 

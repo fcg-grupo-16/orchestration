@@ -1,0 +1,30 @@
+# Configuração do yamllint para este repositório.
+#
+# Existe para que o step de lint do CI seja BLOQUEANTE de verdade. Antes ele rodava com
+# `-d relaxed` e `continue-on-error`, o que acusava 441 achados e saía 0 — ou seja, não era um
+# gate, era ruído: nenhum YAML quebrado seria barrado por ele.
+extends: default
+
+rules:
+  # DESLIGADO de propósito. Os manifestos deste repo carregam comentários longos e explicativos
+  # (o "porquê" de cada decisão de infra, medições, armadilhas). Quebrá-los em 80 colunas pioraria
+  # a leitura, e era essa regra sozinha que gerava os 441 achados.
+  line-length: disable
+
+  # Manifestos k8s e o compose misturam os dois estilos de indentação de lista; não é defeito.
+  indentation:
+    level: error
+    indent-sequences: consistent
+
+  comments:
+    level: error
+    min-spaces-from-content: 1
+
+  # `on:` do GitHub Actions é uma chave, não o booleano `on` do YAML 1.1.
+  truthy:
+    level: error
+    allowed-values: ['true', 'false']
+    check-keys: false
+
+  # Nenhum arquivo do repo usa `---` inicial; exigi-lo seria churn sem ganho.
+  document-start: disable

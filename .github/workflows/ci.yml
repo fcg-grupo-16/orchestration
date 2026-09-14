@@ -4,13 +4,24 @@ name: CI
 #   1) docker-compose  -> parse/validação (sem subir nada)
 #   2) manifestos k8s  -> validação de schema rigorosa OFFLINE (kubeconform)
 #   3) scripts shell   -> `bash -n` (parse, sem executar)
-#   4) YAML lint       -> estilo (não-bloqueante por enquanto)
+#   4) scripts shell   -> shellcheck (semântica; o parse sozinho não basta)
+#   5) RabbitMQ        -> topologia declarativa de docker/rabbitmq/definitions.json
+#   6) Kong            -> `helm template` dos values do gateway
+#   7) YAML lint       -> bloqueante, com a config versionada em .yamllint
 #
-# LACUNA CONHECIDA: o kubeconform PULA todos os CRs de terceiros — os do Kong
-# (KongPlugin/KongConsumer) e os do KEDA (ScaledObject/TriggerAuthentication) — por não
-# ter schema conhecido — um campo inexistente num plugin passa verde aqui. A validação real
-# do gateway é comportamental, contra um cluster: scripts/gateway-test.sh.
-# Rede de segurança para mudanças de infra: pega YAML quebrado ANTES do merge.
+# Os CRs de terceiros passaram a ser validados contra o catálogo de schemas da comunidade
+# (datreeio/CRDs-catalog), e não mais PULADOS: dos 48 recursos de k8s/, 13 eram invisíveis ao CI
+# (6 SealedSecret, 4 KongPlugin, 1 KongConsumer, ScaledObject e TriggerAuthentication).
+#
+# ⚠️ O ganho NÃO é uniforme, e vale saber onde ele para (medido, não suposto):
+#   • KEDA: fecha de verdade. Um campo inventado no `spec` do ScaledObject passava verde e agora
+#     reprova — era o pior caso, porque um scaler quebrado deixa o Deployment em 0 réplica,
+#     indistinguível de scale-to-zero funcionando.
+#   • Kong: NÃO fecha. O schema do KongPlugin não declara `additionalProperties: false` no topo e
+#     trata `config` como objeto livre (por desenho: o conteúdo varia por plugin). Medido: campo
+#     inventado no topo PASSA e `claims_to_verifyy` dentro de `config` PASSA. Só erro de tipo
+#     (`plugin: 123`) e `plugin` ausente reprovam.
+# Logo, a validação do gateway continua sendo comportamental: scripts/gateway-test.sh.
 #
 # Nota: NÃO usamos `kubectl apply --dry-run=client` aqui. Apesar do nome, o dry-run
 # "client" do kubectl moderno NÃO é offline — ele precisa de discovery do apiserver
@@ -36,6 +47,9 @@ permissions:
 env:
   # Versão pinada do kubeconform (nunca "latest" — reprodutibilidade).
   KUBECONFORM_VERSION: v0.6.7
+  # Mesma versão de chart que scripts/deploy-minikube.sh instala. Se divergirem, o CI valida um
+  # chart e o cluster roda outro.
+  KONG_CHART_VERSION: "3.4.1"
 
 jobs:
   validate:
@@ -55,7 +69,9 @@ jobs:
 
       # 2) kubeconform: validação de schema rigorosa e OFFLINE dos manifestos k8s.
       #    -strict: reprova campos desconhecidos (additionalProperties).
-      #    -ignore-missing-schemas: evita falha em CRDs futuros (ex.: SealedSecret da #4).
+      #    -ignore-missing-schemas: rede de segurança para CRDs FUTUROS, que o catálogo ainda não
+      #    tenha. Os CRDs de hoje (SealedSecret, KongPlugin, KongConsumer, ScaledObject,
+      #    TriggerAuthentication) estão todos no catálogo e são validados — ver o cabeçalho.
       - name: Instalar kubeconform
         run: |
           curl -sSfL -o kubeconform.tar.gz \
@@ -64,8 +80,18 @@ jobs:
           sudo mv kubeconform /usr/local/bin/
           kubeconform -v
 
-      - name: Validar schema dos manifestos k8s (kubeconform)
-        run: kubeconform -strict -summary -ignore-missing-schemas -verbose k8s/
+      # `-schema-location default` PRECISA ser repetido: ao passar qualquer -schema-location, o
+      # kubeconform substitui a lista padrão em vez de acrescentar — sem ele, os recursos nativos
+      # (Deployment, Service…) ficariam sem schema.
+      # `-ignore-missing-schemas` continua: o catálogo não cobre TODO CRD, e a alternativa seria
+      # reprovar por um schema que simplesmente não existe.
+      - name: Validar schema dos manifestos k8s (kubeconform + catálogo de CRDs)
+        run: |
+          kubeconform -strict -summary -verbose \
+            -schema-location default \
+            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+            -ignore-missing-schemas \
+            k8s/
 
       # 3) Sintaxe dos scripts de shell. A #26 acrescentou `helm upgrade` ao
       #    deploy-minikube.sh, reescreveu o undeploy-minikube.sh e criou o gateway-test.sh —
@@ -79,10 +105,38 @@ jobs:
             bash -n "$f"
           done
 
-      # 4) yamllint de estilo — NÃO-bloqueante por enquanto (continue-on-error).
-      #    Quando o time alinhar as regras, troque para bloqueante removendo esta flag.
-      - name: yamllint (não-bloqueante)
-        continue-on-error: true
+      # 4) shellcheck: `bash -n` acima só faz PARSE. Um `if [ x ] != [ y ]` é sintaticamente
+      #    válido e semanticamente lixo — passou pelo `bash -n` nesta base e só o shellcheck pegou.
+      - name: shellcheck dos scripts
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          shellcheck --version
+          shellcheck -S warning scripts/*.sh
+
+      # 5) Topologia do RabbitMQ. JSON quebrado ou binding faltando só apareceria no BOOT do broker,
+      #    e o modo de falha é MUDO: o evento cai num exchange sem binding e some sem erro.
+      #    A checagem está num script versionado (e não inline) para poder ser rodada e testada
+      #    localmente — inclusive contra mutações, que é como ela foi validada.
+      - name: Validar a topologia do RabbitMQ (definitions.json)
+        run: python3 .github/scripts/validar-definitions-rabbitmq.py docker/rabbitmq/definitions.json
+
+      # 6) Os values do Kong renderizam? Pega values inválidos antes do deploy.
+      #    O arquivo fica em gateway/ e NÃO em k8s/: não é manifesto, é entrada do Helm — se
+      #    estivesse em k8s/ entraria no kubeconform e no `kubectl apply -R` do deploy.
+      #    O runner já traz o helm (Ubuntu 24.04: Helm 3.21.4); o que precisa estar pinado é o CHART.
+      - name: Validar os values do Kong (helm template)
+        run: |
+          helm repo add kong https://charts.konghq.com
+          helm repo update kong
+          helm template kong kong/kong --version "$KONG_CHART_VERSION" \
+            --namespace kong -f gateway/kong-values.yaml > /dev/null
+          echo "gateway/kong-values.yaml renderiza sem erro no chart $KONG_CHART_VERSION"
+
+      # 7) yamllint, agora BLOQUEANTE. Antes rodava com `-d relaxed` + continue-on-error: acusava
+      #    441 achados e saía 0 — não era gate, era ruído. A config versionada em .yamllint desliga
+      #    `line-length` (os comentários longos dos manifestos são deliberados) e promove o resto a
+      #    erro. Nesta base o resultado é limpo.
+      - name: yamllint
         run: |
           pipx install yamllint || pip install yamllint
-          yamllint -d relaxed k8s/ gateway/ docker-compose.yml
+          yamllint -c .yamllint k8s/ gateway/ docker-compose.yml .github/

@@ -18,6 +18,60 @@ SERVICES=(users-api catalog-api payments-api)
 # `x86_64` e saiu com 0). Custo: partida emulada, mais lenta que os demais serviços.
 FUNCTIONS=(notifications-function)
 
+# --- Tag por COMMIT, não `:local` (issue #40) -------------------------------------------------
+# A tag móvel `:local` é a causa raiz de uma classe inteira de "deploy que não muda nada": quando a
+# tag JÁ EXISTE no nó, `minikube image load` vira NO-OP SILENCIOSO (rc=0, saída vazia), porque um
+# container em execução prende a referência e `minikube image rm` recusa sem `--force`. O pod segue
+# `Running` servindo o binário ANTIGO e todo `kubectl get` diz que está tudo certo — foi assim que
+# três requisitos da Fase 3 (métricas, avaliações, cache) ficaram invisíveis no cluster.
+#
+# MEDIDO: com tag NOVA o load funciona sempre (id no nó == id no host), porque não há o que colidir.
+# Marcar pelo commit do repositório de origem torna a colisão impossível por construção, em vez de
+# remediar a tag móvel depois — que voltaria a prender no deploy seguinte.
+#
+# Os manifestos versionados continuam com `:local` de propósito: são YAML puro, validável pelo
+# kubeconform do CI e aplicável à mão. A substituição acontece numa cópia RENDERIZADA, abaixo.
+tag_do_repo() { # <caminho do repo> [subcaminho do contexto de build] -> sha curto
+  repo="$1"; escopo="${2:-}"
+  if ! git -C "$repo" rev-parse --git-dir >/dev/null 2>&1; then
+    # Sem git (tarball, CI de terceiro): cai para um valor único por execução — nunca `:local`,
+    # senão o no-op volta.
+    echo "sem-git-$(date +%s)"
+    return
+  fi
+  # O ESCOPO importa quando o contexto de build é uma SUBPASTA do repo. O broker é buildado de
+  # docker/rabbitmq, e escopar a tag ao repositório inteiro fazia QUALQUER alteração aqui (um
+  # comentário num script, por exemplo) gerar tag nova e RECRIAR o pod do RabbitMQ — churn de
+  # conexões e filas por mudança em arquivo nenhum do contexto dele. Medido: o pod do broker foi
+  # recriado num deploy cujas únicas alterações estavam em scripts/ e no CI.
+  # Para os serviços não há escopo: o contexto de build é o repositório inteiro.
+  if [ -n "$escopo" ]; then
+    sha="$(git -C "$repo" log -1 --format=%h -- "$escopo")"
+    sujo="$(git -C "$repo" status --porcelain -- "$escopo")"
+  else
+    sha="$(git -C "$repo" rev-parse --short HEAD)"
+    sujo="$(git -C "$repo" status --porcelain)"
+  fi
+  if [ -n "$sujo" ]; then
+    # Árvore suja: o SHA NÃO descreve o que está sendo buildado. Reusar a tag traria o no-op de
+    # volta na próxima alteração não commitada, então cada build ganha uma tag própria.
+    echo "${sha}-sujo-$(date +%s)"
+  else
+    echo "$sha"
+  fi
+}
+
+# Mapa servico<TAB>tag. Arquivo em vez de array associativo de propósito: `declare -A` exige bash 4+
+# e o /bin/bash do macOS é 3.2.
+MAPA_TAGS="$(mktemp)"
+RENDER_DIR=""
+limpar() {
+  rm -f "$MAPA_TAGS"
+  [ -n "$RENDER_DIR" ] && rm -rf "$RENDER_DIR"
+  return 0
+}
+trap limpar EXIT
+
 # Pré-requisito NOVO desta fase: o Kong 3.x só é distribuído por Helm. Checado ANTES de qualquer
 # mutação no cluster — sem isto, o script já teria aplicado o controller de Sealed Secrets e só
 # então morreria em "helm: command not found", deixando o cluster em estado parcial.
@@ -88,28 +142,38 @@ done
 kubectl wait --for=condition=Available --timeout=120s \
   apiservice/v1beta1.external.metrics.k8s.io
 
-echo "==> Build das imagens locais (:local)"
-# RabbitMQ custom (base oficial + plugin rabbitmq_delayed_message_exchange).
-echo "   - fcg-rabbitmq"
-docker build -t "fcg-rabbitmq:local" "$ROOT_DIR/docker/rabbitmq"
+echo "==> Build das imagens locais (tag = commit do repositório de origem)"
+: > "$MAPA_TAGS"
+# O RabbitMQ entra no MESMO esquema, e não é detalhe: a topologia das filas vem do
+# definitions.json ASSADO na imagem, então um no-op de carga aqui serviria uma topologia velha —
+# fila faltando significa evento descartado em silêncio. O build dele é deste repositório.
+TAG="$(tag_do_repo "$ROOT_DIR" "docker/rabbitmq")"
+printf '%s\t%s\n' "fcg-rabbitmq" "$TAG" >> "$MAPA_TAGS"
+echo "   - fcg-rabbitmq -> fcg-rabbitmq:${TAG}"
+docker build -t "fcg-rabbitmq:${TAG}" "$ROOT_DIR/docker/rabbitmq"
 for svc in "${SERVICES[@]}"; do
-  echo "   - $svc"
-  docker build -t "${svc}:local" "$PARENT_DIR/${svc}"
+  TAG="$(tag_do_repo "$PARENT_DIR/${svc}")"
+  printf '%s\t%s\n' "$svc" "$TAG" >> "$MAPA_TAGS"
+  echo "   - $svc -> ${svc}:${TAG}"
+  docker build -t "${svc}:${TAG}" "$PARENT_DIR/${svc}"
 done
 
 for fn in "${FUNCTIONS[@]}"; do
-  echo "   - $fn (linux/amd64: a base do Azure Functions não publica arm64)"
-  docker build --platform linux/amd64 -t "${fn}:local" "$PARENT_DIR/${fn}"
+  TAG="$(tag_do_repo "$PARENT_DIR/${fn}")"
+  printf '%s\t%s\n' "$fn" "$TAG" >> "$MAPA_TAGS"
+  echo "   - $fn -> ${fn}:${TAG} (linux/amd64: a base do Azure Functions não publica arm64)"
+  docker build --platform linux/amd64 -t "${fn}:${TAG}" "$PARENT_DIR/${fn}"
 done
 
 echo "==> Carregando imagens no minikube"
-minikube image load "fcg-rabbitmq:local"
-for svc in "${SERVICES[@]}"; do
-  minikube image load "${svc}:local"
-done
-for fn in "${FUNCTIONS[@]}"; do
-  minikube image load "${fn}:local"
-done
+# Com tag nova a cada commit o `image load` nunca colide e, portanto, nunca no-opa — que era o
+# modo de falha da #40. Não há mais nenhum `docker save | minikube ssh docker load` aqui: além de
+# ser remediação e não conserto, aquele pipe só funciona com `--native-ssh=false` (a forma padrão
+# não encaminha stdin: "requested load from stdin, but stdin is empty").
+while IFS="$(printf '\t')" read -r nome tag; do
+  [ -n "$nome" ] || continue
+  minikube image load "${nome}:${tag}"
+done < "$MAPA_TAGS"
 
 echo "==> Migração Deployment→StatefulSet do MongoDB (kinds diferentes; no-op em cluster limpo)"
 kubectl -n fcg delete deployment mongodb --ignore-not-found
@@ -138,9 +202,35 @@ kubectl -n fcg delete service notifications-api --ignore-not-found
 kubectl -n fcg delete configmap notifications-api-config --ignore-not-found
 kubectl -n fcg delete sealedsecret notifications-api-secret --ignore-not-found
 kubectl -n fcg delete secret notifications-api-secret --ignore-not-found
+# A IMAGEM legada também fica no nó ocupando espaço depois que o Deployment some (encontrada em
+# cluster que já rodou a Fase 2). Não-fatal.
+minikube ssh -- docker rmi notifications-api:local >/dev/null 2>&1 </dev/null \
+  && echo "   - imagem legada notifications-api:local removida do nó" || true
 
-echo "==> Aplicando manifestos (kubectl apply -R -f k8s/)"
-kubectl apply -R -f "$ROOT_DIR/k8s/"
+echo "==> Aplicando manifestos (cópia renderizada com as tags por commit)"
+# Os arquivos em k8s/ ficam intocados, com `:local`. A troca é feita numa CÓPIA, para que:
+#   • o repositório continue com YAML puro, validável offline pelo kubeconform do CI;
+#   • mudar de commit mude o `image:` do spec e o rollout aconteça NATURALMENTE, sem
+#     `rollout restart` — que, como medido na #40, não resolve nada quando o spec não muda.
+RENDER_DIR="$(mktemp -d)"
+cp -R "$ROOT_DIR/k8s/." "$RENDER_DIR/"
+while IFS="$(printf '\t')" read -r nome tag; do
+  [ -n "$nome" ] || continue
+  # `sed -i.bak` funciona no BSD (macOS) e no GNU; o sufixo é removido logo abaixo.
+  find "$RENDER_DIR" -name '*.yaml' -exec \
+    sed -i.bak "s|image: ${nome}:local|image: ${nome}:${tag}|g" {} +
+done < "$MAPA_TAGS"
+find "$RENDER_DIR" -name '*.yaml.bak' -delete
+# Falha ruidosa se alguma substituição não pegou: um `:local` remanescente num dos serviços
+# significaria voltar silenciosamente ao comportamento que esta mudança existe para eliminar.
+while IFS="$(printf '\t')" read -r nome tag; do
+  [ -n "$nome" ] || continue
+  if grep -rq "image: ${nome}:local" "$RENDER_DIR"; then
+    echo "ERRO: '${nome}:local' sobreviveu à renderização — o manifesto mudou de formato?" >&2
+    exit 1
+  fi
+done < "$MAPA_TAGS"
+kubectl apply -R -f "$RENDER_DIR/"
 
 echo "==> Aguardando infra (RabbitMQ Deployment, MongoDB StatefulSet) e microsserviços ficarem prontos"
 kubectl -n fcg rollout status deploy/rabbitmq --timeout=180s
@@ -153,7 +243,49 @@ for svc in "${SERVICES[@]}"; do
 done
 # FUNCTIONS NÃO entram neste laço de propósito: o KEDA mantém a notifications-function em ZERO
 # réplica enquanto as filas estão vazias, e `kubectl rollout status` num Deployment de 0 réplica não
-# é sinal útil de saúde. Quem valida a Function é o ciclo 0->1->0 (ver README, issue #29).
+# é sinal útil de saúde — esperaria para sempre por um pod que CORRETAMENTE não existe.
+#
+# O sinal disponível é a condição Ready do ScaledObject. Ela é NECESSÁRIA e NÃO SUFICIENTE: medido
+# na #29, um ScaledObject com `queueName` inexistente também reporta Ready=True até o primeiro poll
+# do trigger (~18s), só então caindo para TriggerError. Quem prova o scaler é o ciclo 0->1->0 do
+# scripts/keda-test.sh.
+if kubectl -n fcg get scaledobject notifications-function >/dev/null 2>&1; then
+  kubectl -n fcg wait --for=condition=Ready scaledobject/notifications-function --timeout=120s
+fi
+
+# Poda das tags antigas no nó: sem isto o nó acumularia uma imagem por commit.
+#
+# ⚠️ TODO `minikube ssh` aqui leva `</dev/null`, e não é zelo: **`minikube ssh` lê o stdin**, e num
+# `while read` alimentado por arquivo ou pipe ele CONSOME o resto da entrada — o laço roda uma vez
+# e as demais linhas somem, sem erro nenhum. Medido: laço de 3 linhas com `minikube ssh` dentro
+# executa 1 iteração; com `</dev/null`, 3. Foi exatamente assim que a primeira versão desta poda
+# removeu só a PRIMEIRA entrada do mapa e deixou as outras quatro `:local` no nó — e o deploy
+# terminou com exit 0. (`minikube image load` NÃO tem esse comportamento, também medido: por isso
+# o laço de carga acima sempre funcionou.)
+#
+# A listagem do nó é feita UMA vez, antes do laço, em vez de uma vez por serviço.
+echo "==> Podando tags antigas no nó"
+TAGS_NO_NO="$(minikube ssh -- docker images --format "{{.Repository}}:{{.Tag}}" 2>/dev/null </dev/null | tr -d '\r')"
+while IFS="$(printf '\t')" read -r nome tag; do
+  [ -n "$nome" ] || continue
+  # ⚠️ O `|| true` é OBRIGATÓRIO e o motivo é sutil: quando um serviço NÃO tem tag antiga (o caso
+  # comum — deploy sem mudança naquele repo), o `grep -v` não casa nada e sai 1. Sob `pipefail` o
+  # pipeline inteiro vira não-zero, e sob `set -e` isso MATA O SCRIPT ali — depois de podar apenas
+  # a primeira entrada do mapa. Medido: com `set -euo pipefail` o laço morre na iteração 2 com
+  # exit 1; sem o `-e`, completa. O sintoma no deploy era mudo: a última linha impressa era
+  # "Podando tags antigas no nó" e o `==> Pods:` seguinte nunca aparecia.
+  CANDIDATAS="$(echo "$TAGS_NO_NO" | grep "^${nome}:" | grep -v "^${nome}:${tag}\$" || true)"
+  [ -n "$CANDIDATAS" ] || continue
+  echo "$CANDIDATAS" | while read -r antiga; do
+    if minikube ssh -- docker rmi "$antiga" >/dev/null 2>&1 </dev/null; then
+      echo "   - removida: $antiga"
+    else
+      # Não-fatal: uma tag presa não é motivo para reprovar um deploy que funcionou. Mas é
+      # REPORTADA — a primeira versão engolia a recusa e a poda virava no-op invisível.
+      echo "   - NÃO removida (ainda referenciada?): $antiga"
+    fi
+  done
+done < "$MAPA_TAGS"
 
 # Observabilidade (issue #27) — DEPOIS dos serviços e NÃO-FATAL, de propósito.
 # Nenhum initContainer espera por eles, então nada da plataforma depende do rollout.
@@ -185,6 +317,14 @@ echo
 echo "  O catálogo é [AllowAnonymous] no serviço, mas a BORDA exige token (decisão da #26)."
 echo "  payments-api e notifications-function são event-driven: sem rota no gateway."
 echo "  /health* e /metrics não são expostos — o Prometheus raspa os pods dentro do cluster."
+echo
+echo "Serverless (com a fila vazia o KEDA mantém em 0 réplica — é o comportamento esperado):"
+echo "  kubectl -n fcg get deploy notifications-function        # deve mostrar 0/0"
+echo "  kubectl -n fcg get scaledobject notifications-function  # Ready=True, Active=False"
+echo "  ./scripts/keda-test.sh                                  # prova o ciclo 0 -> 1 -> 0"
+echo
+echo "Checklist da entrega (roda antes de gravar):"
+echo "  ./scripts/verify-fase3.sh"
 echo
 echo "Acesso direto aos Services (diagnóstico, sem passar pelo gateway):"
 echo "  kubectl -n fcg port-forward svc/users-api 8081:80"
