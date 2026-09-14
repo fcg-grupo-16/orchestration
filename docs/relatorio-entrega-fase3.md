@@ -49,7 +49,12 @@
 
 ## Vídeo
 
-`<link do YouTube — até 20 minutos>`
+**Duração máxima: 20 minutos.**
+
+`<link do Google Drive — deixar com acesso para qualquer pessoa com o link>`
+
+> ⚠️ **Preencher antes de enviar**, junto com a tabela de participantes acima. São os dois únicos
+> campos deste relatório que não podem ser derivados do repositório.
 
 ## Como as funcionalidades obrigatórias foram atendidas
 
@@ -98,10 +103,10 @@ requisições por status HTTP, taxa de erro 5xx, top 5 rotas mais lentas e saúd
 > `catalog-api → RabbitMQ → payments-api → RabbitMQ → catalog-api`, com os atributos de negócio
 > (`fcg.order.id`, `fcg.payment.status`, `fcg.payment.rule`) no span do pagamento.
 >
-> **A cadeia do cadastro fecha igualmente**: trace `177e2dcf8e7a`, 5 spans em `users-api` +
-> `notifications-function`. E a compra alcança a notificação: trace
-> `ff866e2a4eb32ae4b59cdc2e9eabf008`, **10 spans em três serviços**. Os quatro serviços da
-> plataforma aparecem no Jaeger.
+> **A cadeia do cadastro fecha igualmente**: `users-api` + `notifications-function`. E a compra
+> alcança a notificação: na última verificação ponta a ponta, o maior trace da plataforma tem
+> **11 spans atravessando os QUATRO serviços** — `users-api`, `catalog-api`, `payments-api` e
+> `notifications-function`. Os quatro aparecem no Jaeger.
 
 ### 4. NoSQL
 
@@ -122,6 +127,38 @@ O mesmo Redis serve de **store de idempotência** da `notifications-function` (`
 ali **fail-closed** — ao contrário do cache dos serviços, que é fail-open. Ver
 [ADR 0005](adr/0005-cache-redis-invalidacao-por-geracao.md).
 
+## Verificação ponta a ponta
+
+A plataforma é verificada por **quatro scripts**, todos versionados e todos executados contra o
+cluster antes desta entrega:
+
+| Script | O que prova | Resultado |
+|---|---|---|
+| `./scripts/verify-fase3.sh` | Checklist dos 5 requisitos da fase | **PRONTO PARA GRAVAR (sem pendências)** |
+| `./scripts/gateway-test.sh` | Matriz do Kong | **17/17** |
+| `./scripts/keda-test.sh` | Ciclo 0 → 1 → 0 | **12/12** |
+| `MODO=gateway ./scripts/smoke-test.sh` | Fluxo de negócio pelo gateway | **9/9** |
+
+Além deles, uma passada consolidada com o usuário **preservado** (o `smoke-test.sh` apaga o dele no
+fim, e isso esconde a notificação de compra):
+
+| # | Passo | Resultado |
+|---|---|---|
+| 1 | Cadastro pelo gateway | `201` |
+| 2 | Login | token JWT emitido |
+| 3 | Catálogo com token | jogo retornado |
+| 4 | Compra (`POST /biblioteca`) | `202` — assíncrono, por desenho |
+| 5 | Biblioteca após o pagamento | jogo presente (o `payments-api` aprovou e o `catalog-api` gravou) |
+| 6 | Avaliação (NoSQL) | `201` |
+| 7 | Avaliação duplicada | `409` — o índice `ux_jogo_usuario` recusa no banco |
+| 8 | Notificações no `notificationsdb` | **duas**: boas-vindas e confirmação de compra, ambas endereçadas ao **e-mail real** |
+| 9 | Trace no Jaeger | **11 spans atravessando os quatro serviços** |
+
+O passo 8 é o que fecha a issue #9: a confirmação chega ao endereço do comprador, não ao `UserId`. E
+por viver no MongoDB, essa evidência **sobrevive ao scale-to-zero** — o pod da Function já morreu
+quando se consulta, e o registro continua lá. É a forma mais confiável de mostrar a notificação no
+vídeo, porque não depende de pegar o pod vivo.
+
 ## Como subir e conferir tudo
 
 ```bash
@@ -135,12 +172,21 @@ minikube delete && minikube start
 
 Registradas como issues, e não omitidas:
 
-| Issue | O quê |
-|---|---|
-| [notifications-function#9](https://github.com/fcg-grupo-16/notifications-function/issues/9) | Confirmação de compra endereçada ao `UserId`, não a um e-mail |
+| Issue | O quê | Afeta a entrega? |
+|---|---|---|
+| [catalog-api#24](https://github.com/fcg-grupo-16/catalog-api/issues/24) | Um teste de integração falhou de forma intermitente (1 ocorrência); 100 execuções posteriores limpas | **Não.** É intermitência de *teste*, não de aplicação. Nenhum requisito da fase depende dela |
+
+Sobre a #24, o que se sabe está medido e registrado na issue: a falha durou 4 s num teste que leva
+11,2 s, e essa janela é dominada pela subida dos containers de teste (MongoDB 4,6–6,4 s, RabbitMQ
+5,3–6,3 s) — ou seja, a falha caiu na infraestrutura de teste, não numa asserção da API. A causa raiz
+segue desconhecida, e o teste foi instrumentado para que a próxima ocorrência se explique sozinha.
+Fechar a issue sem causa raiz seria varrer para baixo do tapete.
 
 Já resolvidas durante a entrega, e listadas aqui porque apareciam em versões anteriores deste
-relatório: [orchestration#35](https://github.com/fcg-grupo-16/orchestration/issues/35) (Redis
+relatório: [notifications-function#9](https://github.com/fcg-grupo-16/notifications-function/issues/9)
+(confirmação de compra endereçada ao `UserId` em vez de a um e-mail — hoje a Function resolve o
+contato num endpoint interno do `users-api` com credencial de serviço própria,
+[ADR 0007](adr/0007-consulta-de-contato-servico-a-servico.md)), [orchestration#35](https://github.com/fcg-grupo-16/orchestration/issues/35) (Redis
 volátil usado como store de idempotência — hoje há uma instância dedicada e durável,
 [ADR 0006](adr/0006-redis-dedicado-para-idempotencia.md)),
 [#38](https://github.com/fcg-grupo-16/orchestration/issues/38) e
