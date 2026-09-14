@@ -23,8 +23,12 @@ TMPD="$(mktemp -d)"
 # Marca o início da execução. O relógio vem do PRÓPRIO Mongo, não do host: `date -u` local com
 # milissegundos truncados abria uma janela de ~1s em que um refresh_token de terceiro, criado
 # imediatamente antes, seria apagado (medido: pod 0,087s à frente do host; com driver de VM o drift
-# pode ser bem maior). Fallback no host se o exec falhar — a janela volta, mas o teste não trava.
-INICIO="$(kubectl -n fcg exec mongodb-0 -- date -u +%Y-%m-%dT%H:%M:%S.%3NZ 2>/dev/null | tr -d '\r')"
+# pode ser bem maior). Fallback no host se o exec falhar.
+# ⚠️ `|| true` OBRIGATORIO: sob `set -euo pipefail`, o `pipefail` faz o pipeline `kubectl exec | tr`
+# propagar a falha para a atribuicao, e o `set -e` mata o script AQUI — sem imprimir nada. O fallback
+# abaixo seria, portanto, INALCANCAVEL sem ele. Medido: com pipefail, exit 1 e nenhuma saida;
+# sem pipefail, o fallback e alcancado.
+INICIO="$(kubectl -n fcg exec mongodb-0 -- date -u +%Y-%m-%dT%H:%M:%S.%3NZ 2>/dev/null | tr -d '\r' || true)"
 [ -n "$INICIO" ] || INICIO="$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"
 POD_A="rl-a-$$"; POD_B="rl-b-$$"
 # O --rm do `kubectl run` é client-side: um Ctrl-C deixaria os pods rodando e martelando o gateway,
@@ -100,7 +104,7 @@ check "2. token invalido -> 401" 401 "$(code -H 'Authorization: Bearer lixo' "$G
 
 # O 401 tem de vir do KONG, não do serviço — os dois devolvem 401 e confundi-los seria declarar
 # validação de borda inexistente.
-SRV=$(curl -si -H "$HOSTH" "$GW/api/v1/jogos" | tr -d '\r' | awk 'tolower($1)=="server:"{print $2}')
+SRV=$(curl -si -H "$HOSTH" "$GW/api/v1/jogos" | tr -d '\r' | awk 'tolower($1)=="server:"{print $2}' || true)
 case "$SRV" in kong/*) printf "  OK   %-46s %s\n" "3. o 401 vem do Kong" "$SRV";;
   *) printf "  FALHA %-45s server=%s (esperado kong/*)\n" "3. o 401 vem do Kong" "${SRV:-vazio}"; FALHAS=$((FALHAS+1));; esac
 

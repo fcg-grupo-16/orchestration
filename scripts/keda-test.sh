@@ -38,7 +38,11 @@ EMAIL=""
 TMPD="$(mktemp -d)"
 # Relógio do PRÓPRIO Mongo, não do host: `date -u` local trunca milissegundos (e no macOS não os
 # produz), o que abriria uma janela de ~1s em que um refresh_token de terceiro seria apagado.
-INICIO="$(kubectl -n "$NS" exec mongodb-0 -- date -u +%Y-%m-%dT%H:%M:%S.%3NZ 2>/dev/null | tr -d '\r')"
+# ⚠️ `|| true` OBRIGATORIO: sob `set -euo pipefail`, o `pipefail` faz o pipeline `kubectl exec | tr`
+# propagar a falha para a atribuicao, e o `set -e` mata o script AQUI — sem imprimir nada. O fallback
+# abaixo seria, portanto, INALCANCAVEL sem ele. Medido: com pipefail, exit 1 e nenhuma saida;
+# sem pipefail, o fallback e alcancado.
+INICIO="$(kubectl -n "$NS" exec mongodb-0 -- date -u +%Y-%m-%dT%H:%M:%S.%3NZ 2>/dev/null | tr -d '\r' || true)"
 [ -n "$INICIO" ] || INICIO="$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"
 
 cleanup() {
@@ -93,7 +97,9 @@ READY=$(kubectl -n "$NS" get scaledobject "$DEPLOY" \
   -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)
 check "1. ScaledObject Ready" "True" "${READY:-ausente}"
 # Sem este HPA o KEDA não está de fato no controle da escala.
-HPA=$(kubectl -n "$NS" get hpa "keda-hpa-$DEPLOY" -o name 2>/dev/null | wc -l | tr -d ' ')
+# `|| true` pela mesma razao do INICIO: sem HPA, o `kubectl get -o name` sai != 0 e o pipefail
+# mataria o script justamente no caso que esta assercao existe para reportar.
+HPA=$(kubectl -n "$NS" get hpa "keda-hpa-$DEPLOY" -o name 2>/dev/null | wc -l | tr -d ' ' || true)
 check "2. HPA gerenciado pelo KEDA existe" "1" "$HPA"
 # As duas filas vêm do definitions.json assado na imagem do broker; o RabbitMQTrigger apenas
 # CONSOME de fila existente, então ausência de fila aqui seria evento descartado em silêncio.
@@ -161,7 +167,7 @@ check "8. KEDA acordou a Function" "sim" "$SUBIU"
 [ "$SUBIU" = "sim" ] && printf "       (pod apareceu em %ss do disparo)\n" "$(( $(date +%s) - T0 ))"
 
 echo "==> A Function PROCESSOU a mensagem?"
-POD=$(kubectl -n "$NS" get pods -l "app=$DEPLOY" --no-headers -o custom-columns=N:.metadata.name 2>/dev/null | head -1)
+POD=$(kubectl -n "$NS" get pods -l "app=$DEPLOY" --no-headers -o custom-columns=N:.metadata.name 2>/dev/null | head -1 || true)
 PROC=nao
 if [ -n "$POD" ]; then
   kubectl -n "$NS" wait --for=condition=Ready "pod/$POD" --timeout=120s >/dev/null 2>&1 || true
