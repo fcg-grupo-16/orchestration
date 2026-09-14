@@ -81,5 +81,5 @@ spec:
               # Host de Functions + isolated worker: dois processos .NET no mesmo container.
               cpu: 500m
               memory: 640Mi
-          # Sem probe HTTP: a função é acionada por fila e o host não expõe endpoint de saúde —
-          # uma probe HTTP falharia e reiniciaria o pod em loop.
+              # Sem probe HTTP: a função é acionada por fila e o host não expõe endpoint de saúde —
+              # uma probe HTTP falharia e reiniciaria o pod em loop.
