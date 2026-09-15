@@ -45,7 +45,7 @@
 | [catalog-api](https://github.com/fcg-grupo-16/catalog-api) | Catálogo, biblioteca, compra e avaliações (NoSQL) |
 | [payments-api](https://github.com/fcg-grupo-16/payments-api) | Processamento de pagamento (event-driven) |
 | [notifications-function](https://github.com/fcg-grupo-16/notifications-function) | **Função serverless** de notificações (Azure Functions + KEDA) |
-| [notifications-api](https://github.com/fcg-grupo-16/notifications-api) | ⚠️ **DEPRECADO na Fase 3** — substituído pela Function |
+| [notifications-api](https://github.com/fcg-grupo-16/notifications-api) | ⚠️ **DEPRECADO e ARQUIVADO na Fase 3** — substituído pela Function. Mantido como registro histórico da Fase 2 e origem do port; ver o `DEPRECATED.md` na raiz dele |
 
 ## Vídeo
 
@@ -72,6 +72,11 @@ querystring e por cookie, `OPTIONS` anônimo, e isolamento de rate limit medido 
 distintos**.
 
 ### 2. Serverless
+
+O requisito diz *"substituindo o container que rodava continuamente"*, e a substituição foi levada
+até o fim: o `notifications-api` saiu do compose, dos manifestos e do cluster, e o repositório está
+**deprecado e arquivado**, com `DEPRECATED.md` registrando as cinco mudanças técnicas do port e o que
+permaneceu byte-idêntico. Não foi deletado de propósito — ele é a rastreabilidade da refatoração.
 
 **`notifications-function`**: Azure Functions v4, worker isolado (.NET 8), com `RabbitMQTrigger` nas
 filas `notifications-user-created` e `notifications-payment-processed`, mais uma função HTTP de
