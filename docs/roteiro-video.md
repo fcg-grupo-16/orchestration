@@ -1,43 +1,61 @@
 # Roteiro do vídeo — Tech Challenge Fase 3
 
-Limite: **20 minutos**. Grave em blocos e edite — tentar uma tomada única com `kubectl` ao vivo é
-como se perde a entrega. Cada bloco abaixo é independente: se um sair ruim, regrave só ele.
+**Script de narração.** Cada bloco tem **FALE** (texto literal, para ler em voz alta) e **MOSTRE**
+(o que tem de estar na tela naquele momento). Cada número e cada afirmação das falas foi verificado —
+no cluster ou nos manifestos versionados. Você pode ler em voz alta sem revisar.
+
+Limite: **20 minutos**. Grave em blocos e junte na edição. Cada bloco é independente: se um sair
+ruim, regrave só ele.
+
+> **Ritmo:** são **1.747 palavras** de fala — cerca de **12min30** a 140 palavras por minuto. Os
+> outros 7 minutos são digitar, esperar comando e deixar o KEDA acordar o pod. O tempo sobra de
+> propósito: se você estiver adiantado, **não corra**.
 
 ---
 
-## Parte 0 — Antes de ligar a câmera
+# Parte 0 — Antes de ligar a câmera
 
-### 0.1 Subir e conferir
+## 0.1 Subir e conferir
+
+O cluster **não sobrevive** entre sessões: o minikube fica `Stopped` depois de um reboot, e o
+`kubectl` cai silenciosamente em outro contexto. Comece garantindo os dois:
 
 ```bash
+minikube status                   # se disser "Stopped", suba: minikube start
+kubectl config use-context minikube
+kubectl get ns | grep fcg         # sem isto, você está apontando para OUTRO cluster
+
 cd orchestration
-./scripts/deploy-minikube.sh      # cluster completo (~5 min)
+./scripts/seal-secrets.sh         # só se o minikube foi recriado (chave nova do controller)
+./scripts/deploy-minikube.sh      # ~5 min
 ./scripts/verify-fase3.sh         # TEM de terminar em "PRONTO PARA GRAVAR (sem pendências)"
 ```
 
-Se o `verify-fase3.sh` não terminar verde, **não grave** — o problema aparece no vídeo.
+Se não terminar verde, **não grave**.
 
-### 0.2 Abrir os port-forwards e ESPERAR ficarem prontos
+> ⚠️ O erro mais traiçoeiro aqui é o `kubectl` apontando para outro cluster: os comandos respondem
+> normalmente, só dizem "not found". Parece que a plataforma quebrou, quando é só o contexto errado.
 
-Este é o erro que mais custa tempo: disparar `curl` antes de o túnel estar de pé devolve `HTTP 000`
-ou `404`, e parece bug da aplicação.
+## 0.2 Port-forwards, com espera de prontidão
+
+Disparar `curl` antes do túnel subir devolve `HTTP 000` e parece bug da aplicação.
 
 ```bash
 kubectl -n kong port-forward svc/kong-kong-proxy 8000:80 &
 kubectl -n fcg  port-forward svc/grafana     3000:3000 &
 kubectl -n fcg  port-forward svc/prometheus  9090:9090 &
 kubectl -n fcg  port-forward svc/jaeger     16686:16686 &
+kubectl -n fcg  port-forward svc/payments-api 18083:80 &
 
-# espere cada um responder ANTES de seguir
-for p in 8000 3000 9090 16686; do
+for p in 8000 3000 9090 16686 18083; do
   until curl -s -o /dev/null -m 2 http://127.0.0.1:$p; do sleep 1; done
   echo "porta $p pronta"
 done
 ```
 
-> ⚠️ O Kong vive no namespace **`kong`**, não em `fcg`. Errar o namespace devolve "service not found".
+> O Kong vive no namespace **`kong`**, não em `fcg`.
 
-### 0.3 Variáveis e um token de admin já na mão
+## 0.3 Variáveis
 
 ```bash
 export GW=http://localhost:8000
@@ -49,245 +67,436 @@ export JOGO=$(curl -s -H "$H" -H "Authorization: Bearer $TOKEN" \
 echo "token=${#TOKEN} chars  jogo=$JOGO"
 ```
 
-> O campo da paginação é **`itens`** (português), não `items`. Errar isso devolve `null` e trava a demo.
+> O campo da paginação é **`itens`**, não `items`.
 
-### 0.4 Cinco terminais, cada um com o comando já digitado
+## 0.4 Tela e terminais
+
+- Esconda a barra de menu e o Dock (`System Settings → Desktop & Dock`), trave **16:9** no CleanShot
+  e use **a mesma área em todos os blocos**, senão o enquadramento pula na edição.
+- **Aumente a fonte do terminal agora.** Fonte pequena fica ilegível depois da compressão.
+- Ligue o **Do Not Disturb automático** do CleanShot.
 
 | Terminal | Deixe pronto com |
 |---|---|
-| 1 — gateway | os port-forwards da 0.2 rodando |
-| 2 — curl | as variáveis da 0.3 exportadas |
-| 3 — serverless | `kubectl -n fcg get deploy notifications-function -w` (já rodando) |
-| 4 — dados | `kubectl -n fcg exec -it mongodb-0 -- mongosh` (já conectado) |
-| 5 — scripts | no diretório `orchestration`, pronto para os `./scripts/*.sh` |
+| 1 | os port-forwards da 0.2 rodando |
+| 2 | as variáveis da 0.3 exportadas — é aqui que você digita |
+| 3 | `kubectl -n fcg get deploy notifications-function -w` rodando |
+| 4 | `kubectl -n fcg exec -it mongodb-0 -- mongosh` conectado |
+| 5 | no diretório `orchestration`, para os `./scripts/*.sh` |
 
-> O pod da Function demora alguns segundos a mais para subir: a imagem é **amd64 emulada** (a base do
-> Azure Functions não publica arm64). Não corte o vídeo achando que travou.
+> O pod da Function demora alguns segundos a mais: a imagem é **amd64 emulada**. Não corte achando
+> que travou.
 
 ---
 
-## Parte 1 — Os blocos
+# Parte 1 — O script
 
 | Tempo | Bloco |
 |---|---|
-| 0:00–1:30 | Contexto e arquitetura |
+| 0:00–1:30 | Abertura e arquitetura |
 | 1:30–5:00 | **Requisito 1** — API Gateway |
-| 5:00–8:30 | **Requisito 2** — Serverless com escala a zero |
-| 8:30–11:30 | **Requisito 3** — Observabilidade (Opção A) |
-| 11:30–13:30 | Traces distribuídos (extra) |
+| 5:00–8:30 | **Requisito 2** — Serverless |
+| 8:30–11:30 | **Requisito 3** — Observabilidade |
+| 11:30–13:30 | Traces distribuídos |
 | 13:30–16:00 | **Requisito 4** — NoSQL |
-| 16:00–18:00 | **Requisito 5** — Cache distribuído |
-| 18:00–19:15 | Fluxo completo de ponta a ponta |
+| 16:00–18:00 | **Requisito 5** — Cache |
+| 18:00–19:15 | Fluxo completo |
 | 19:15–20:00 | Fechamento |
 
 ---
 
-### 0:00–1:30 · Contexto
+## Bloco 1 · 0:00–1:30 · Abertura e arquitetura
 
-Mostre o diagrama do README do `orchestration`.
+**MOSTRE:** o diagrama de arquitetura do README do `orchestration`, em tela cheia.
 
-**Diga:** a Fase 2 era um monolito; a Fase 3 quebrou em **quatro serviços** com comunicação por
-evento (RabbitMQ + MassTransit), **um deles serverless**. São seis repositórios: quatro de serviço,
-um de orquestração e o `notifications-api` marcado como **deprecado**.
+**FALE:**
 
-Nomeie os cinco requisitos e onde cada um está — é o índice do vídeo.
+> Olá. Este é o Tech Challenge da Fase 3 do grupo dezesseis, o FIAP Cloud Games.
+>
+> Na Fase 2, isso era um monolito. Nesta fase, ele virou quatro microsserviços que conversam por
+> evento, usando RabbitMQ com MassTransit — e um deles deixou de ser um container para virar uma
+> função serverless.
+>
+> São quatro serviços: o `users-api` faz cadastro e emite o token; o `catalog-api` cuida de catálogo,
+> biblioteca e avaliações; o `payments-api` decide o pagamento; e a `notifications-function` envia os
+> e-mails. Tudo isso atrás de um gateway.
+
+**MOSTRE:** aponte com o cursor, no diagrama, o caminho da compra — `catalog-api` → RabbitMQ →
+`payments-api` → RabbitMQ → `catalog-api` e `notifications-function`.
+
+**FALE:**
+
+> O fluxo da compra é assim: o catálogo recebe a aquisição e publica um evento. O pagamento decide se
+> aprova. E aí duas coisas acontecem em paralelo: o catálogo grava na biblioteca, e a função manda o
+> e-mail de confirmação. Ninguém espera ninguém.
+>
+> Vou mostrar os cinco requisitos obrigatórios, um por um, rodando no cluster. Gateway, serverless,
+> observabilidade, NoSQL e cache distribuído.
 
 ---
 
-### 1:30–5:00 · Requisito 1: API Gateway
+## Bloco 2 · 1:30–5:00 · Requisito 1 — API Gateway
+
+**MOSTRE:** terminal 2. Rode:
 
 ```bash
-# sem token -> 401, e repare no cabeçalho Server
 curl -i -H "$H" $GW/api/v1/jogos | head -5
+```
 
-# login público -> token
+**FALE:**
+
+> Primeiro requisito: API Gateway. Estou pedindo o catálogo **sem** token.
+>
+> Deu quatrocentos e um, como esperado. Mas o que importa aqui é essa linha: `Server: kong slash três
+> ponto nove ponto três`.
+>
+> Isso quer dizer que **a requisição nunca chegou ao serviço**. Quem recusou foi o Kong, na borda. Não
+> é só ter um gateway na frente — é o gateway de fato autenticando, antes de gastar um serviço.
+
+**MOSTRE:** rode o login e mostre o token:
+
+```bash
 curl -s -H "$H" -H 'Content-Type: application/json' \
   -d '{"email":"admin@fcg.com","senha":"Admin@123456"}' $GW/api/v1/auth/login | jq -r .token | head -c 40
+```
 
-# com token -> 200
+**FALE:**
+
+> Agora o login, que é rota pública. O `users-api` emite um JWT.
+
+**MOSTRE:**
+
+```bash
 curl -i -H "$H" -H "Authorization: Bearer $TOKEN" $GW/api/v1/jogos | head -3
+```
 
-# token pela querystring -> 401 (não se aceita credencial em URL)
+**FALE:**
+
+> Com o token, duzentos. Mesma rota, mesma chamada — só mudou a credencial.
+
+**MOSTRE:**
+
+```bash
 curl -i -H "$H" "$GW/api/v1/jogos?jwt=$TOKEN" | head -3
 ```
 
-**O ponto que vale o bloco:** o 401 traz `Server: kong/3.9.3`. **A requisição nem chegou ao serviço** —
-a autenticação acontece na borda. Fale isso em voz alta; é a diferença entre "tem um gateway na
-frente" e "o gateway está de fato autenticando".
+**FALE:**
 
-Abra `k8s/gateway/41-kong-plugins.yaml` e mostre que a configuração é **CRD versionado**, não Admin
-API mutável.
+> E aqui um detalhe que a gente fez de propósito. Estou mandando o **mesmo token válido**, mas pela
+> query string, na URL. E o gateway recusa.
+>
+> Isso é decisão de segurança, não limitação: credencial em URL vaza em log de servidor, em histórico
+> de navegador e no cabeçalho `Referer`. Só aceitamos no cabeçalho `Authorization`.
 
-Feche com a matriz:
+**MOSTRE:** abra `k8s/gateway/41-kong-plugins.yaml` no editor, role pelos plugins.
+
+**FALE:**
+
+> A configuração do gateway é toda em CRD versionado, aqui no repositório. Nada de Admin API mutável.
+> Quem clonar o repo sobe o mesmo gateway, com os mesmos plugins.
+
+**MOSTRE:** terminal 5:
 
 ```bash
-./scripts/gateway-test.sh          # 17/17
+./scripts/gateway-test.sh
 ```
 
-Destaque as duas últimas asserções: rate limit **por IP**, provado com **dois pods em IPs distintos**
-— um recebe 429 enquanto o outro segue em 200.
+Espere terminar e deixe o resultado na tela.
+
+**FALE:**
+
+> E tem uma matriz de testes do gateway: dezessete asserções. Token na query string, token em cookie,
+> `OPTIONS` anônimo, `/health` não exposto, rate limit.
+>
+> As duas últimas são as que eu mais gosto. O rate limit é **por IP** — e isso é testado com dois pods
+> em IPs diferentes: um leva quatrocentos e vinte e nove, e o outro continua em duzentos ao mesmo
+> tempo. Se o limite fosse global, os dois cairiam juntos.
 
 ---
 
-### 5:00–8:30 · Requisito 2: Serverless
+## Bloco 3 · 5:00–8:30 · Requisito 2 — Serverless
+
+**MOSTRE:** terminal 2:
 
 ```bash
-kubectl -n fcg get deploy notifications-function        # 0/0  <- escala a zero REAL
-kubectl -n fcg get scaledobject notifications-function  # Ready=True, Active=False
+kubectl -n fcg get deploy notifications-function
+kubectl -n fcg get scaledobject notifications-function
 ```
 
-**Diga:** em repouso não há pod. Não é `replicas: 1` ocioso — é **zero**.
+**FALE:**
 
-Dispare um evento real e deixe o terminal 3 à mostra:
+> Segundo requisito: serverless. Esse é o serviço de notificações, que na Fase 2 era um container
+> rodando vinte e quatro horas por dia esperando evento.
+>
+> Repare: **zero de zero réplica**. Não é uma réplica ociosa — é zero. Não existe pod. E o
+> `ScaledObject` do KEDA está `Ready` igual a `True`, com `Active` igual a `False`, porque a fila está
+> vazia.
+
+**MOSTRE:** deixe o terminal 3 (`get deploy -w`) visível ao lado. Rode no terminal 2:
 
 ```bash
 curl -s -o /dev/null -w '%{http_code}\n' -H "$H" -H 'Content-Type: application/json' \
   -d '{"nome":"Demo","email":"demo-'$(date +%s)'@fcg.com","senha":"Player@123456"}' \
-  $GW/api/v1/usuarios          # 201
+  $GW/api/v1/usuarios
 ```
 
-O pod nasce em **6–11 s**. Quando aparecer:
+**FALE:**
+
+> Vou cadastrar um usuário de verdade, pelo gateway. Isso publica um evento na fila.
+>
+> E agora é só olhar o terminal da direita. O KEDA está vendo a fila crescer e vai subir o pod.
+
+**MOSTRE:** espere o pod aparecer no `-w` (uns 10 segundos). **Não corte.**
+
+**FALE:**
+
+> Aí está. O pod nasceu em cerca de dez segundos, a partir de zero, porque chegou mensagem.
+
+**MOSTRE:**
 
 ```bash
 kubectl -n fcg logs -l app=notifications-function --tail=20 | grep -i executed
 ```
 
-Procure `Executed 'Functions.UserCreatedFunction' (Succeeded)`.
+**FALE:**
 
-Depois abra `k8s/50-keda-notifications.yaml` e mostre `minReplicaCount: 0` e o trigger de fila.
+> E processou: `Executed Functions.UserCreatedFunction, Succeeded`. O e-mail de boas-vindas saiu.
 
-**Espere a volta a zero** (~60–75 s após o disparo) com a câmera ligada — é o requisito de otimização
-de recursos acontecendo. Se preferir, prove com o script:
+**MOSTRE:** abra `k8s/50-keda-notifications.yaml`, destaque `minReplicaCount: 0` e o trigger de fila.
 
-```bash
-./scripts/keda-test.sh             # 12/12, incluindo o ciclo 0 -> 1 -> 0
-```
+**FALE:**
 
-**Diga também por que não é o plano Consumption da Azure:** o binding RabbitMQ não é suportado lá, e
-os planos que o suportam são de instância reservada, sem escala a zero. Está na ADR 0003.
+> É esse manifesto que faz o trabalho. `minReplicaCount` zero, e a métrica de escala é o tamanho da
+> fila do RabbitMQ.
+>
+> Uma decisão que vale explicar: a gente **não** usou o plano Consumption da Azure. O binding de
+> RabbitMQ não é suportado lá, e os planos que suportam são de instância reservada, sem escala a zero
+> — o que mataria justamente o requisito. Está registrado na ADR três.
+
+**MOSTRE:** volte ao terminal 3 e espere o pod voltar a zero (~70 s do disparo). Se preferir não
+esperar na gravação, corte aqui e rode `./scripts/keda-test.sh` no lugar.
+
+**FALE:**
+
+> E agora o outro lado do requisito, que é o que economiza recurso: sem mensagem na fila, o KEDA
+> derruba o pod e volta para zero. Aconteceu cerca de setenta segundos depois do disparo.
+>
+> Esse ciclo inteiro, zero, um, zero, tem um script que prova em doze asserções.
 
 ---
 
-### 8:30–11:30 · Requisito 3: Observabilidade (Opção A)
+## Bloco 4 · 8:30–11:30 · Requisito 3 — Observabilidade
 
-**Diga explicitamente: "escolhemos a Opção A — Prometheus + Grafana, implantados por manifestos
-Kubernetes versionados."** O enunciado oferece opções; deixe claro qual foi.
-
-Grafana em `localhost:3000` (admin/admin) → pasta **FCG** → dashboard **FCG — Visão geral**.
-
-Gere tráfego antes de mostrar, senão os painéis ficam vazios:
+**MOSTRE:** terminal 2, antes de abrir o Grafana:
 
 ```bash
 for i in $(seq 1 30); do curl -s -o /dev/null -H "$H" -H "Authorization: Bearer $TOKEN" $GW/api/v1/jogos; done
 ```
 
-Percorra os painéis: **p50/p95/p99 por serviço**, throughput, requisições por status, **taxa de erro
-5xx**, top 5 rotas mais lentas.
+**FALE:**
 
-Prometheus em `localhost:9090/targets` — pode abrir sem receio:
+> Terceiro requisito: observabilidade. O enunciado dá opções, e **a nossa escolha foi a Opção A —
+> Prometheus com Grafana**, implantados por manifesto Kubernetes versionado, como a opção pede.
+>
+> Antes de abrir o painel, vou gerar tráfego, senão os gráficos aparecem vazios e não é isso que eu
+> quero mostrar.
 
-```
-UP = 4   DOWN = 0      (users-api, catalog-api, payments-api, prometheus)
-```
+**MOSTRE:** navegador em `localhost:3000`, login `admin`/`admin`, pasta **FCG**, dashboard
+**FCG — Visão Geral**. Role pelos painéis devagar.
 
-> A `notifications-function` fica **de fora de propósito** (`prometheus.io/scrape: "false"`): ela vive
-> em zero réplica, e um alvo que some a cada 60 s poluiria o painel de saúde. Explique isso — alguém
-> vai perguntar por que são quatro e não cinco.
+**FALE:**
 
-Feche com a **métrica de negócio**, que é o que separa "instrumentei o framework" de "instrumentei o
-domínio":
+> Esse dashboard é provisionado como código: ele nasce de um JSON no repositório e vira ConfigMap. Não
+> foi montado à mão na interface, então quem subir o cluster recebe o painel pronto.
+>
+> São dez painéis. Nove de métrica, e um primeiro que explica como ler os outros.
+>
+> Latência em percentis, p cinquenta, p noventa e cinco e p noventa e nove, por serviço. Throughput.
+> Requisições por status HTTP. Taxa de erro cinco-x-x. E as cinco rotas mais lentas.
+
+**MOSTRE:** navegador em `localhost:9090/targets`.
+
+**FALE:**
+
+> E aqui os alvos do Prometheus: quatro no ar, zero fora.
+>
+> Vai faltar um para quem está contando, e é de propósito: a `notifications-function` está marcada
+> para **não** ser raspada. Ela vive em zero réplica — um alvo que desaparece a cada minuto deixaria o
+> painel de saúde permanentemente vermelho, sem nenhum problema real acontecendo.
+
+**MOSTRE:** terminal 2:
 
 ```bash
-kubectl -n fcg port-forward svc/payments-api 18083:80 &
 curl -s localhost:18083/metrics | grep fcg_payment_decisions_total
 ```
 
-Mostre os labels `status` e `rule`.
+**FALE:**
+
+> E para fechar, a parte que separa instrumentar o framework de instrumentar o domínio.
+>
+> Essa é uma métrica **de negócio**: `fcg_payment_decisions_total`, com label de status e de regra.
+> Ela não conta requisição HTTP — conta **decisão de pagamento**, aprovada ou recusada, e por qual
+> regra. É o tipo de número que o time de produto pergunta, não o time de infra.
 
 ---
 
-### 11:30–13:30 · Traces distribuídos (extra, não exigido pela Opção A)
+## Bloco 5 · 11:30–13:30 · Traces distribuídos
 
-Jaeger em `localhost:16686`.
-
-Faça uma compra para gerar o trace fresco:
+**MOSTRE:** terminal 2:
 
 ```bash
 curl -s -o /dev/null -w '%{http_code}\n' -X POST -H "$H" -H "Authorization: Bearer $TOKEN" \
-  -H 'Content-Type: application/json' -d "{\"jogoId\":\"$JOGO\"}" $GW/api/v1/biblioteca   # 202
+  -H 'Content-Type: application/json' -d "{\"jogoId\":\"$JOGO\"}" $GW/api/v1/biblioteca
 ```
 
-No Jaeger, busque por `catalog-api` e abra o trace mais longo. Percorra os spans:
+**FALE:**
 
-```
-users-api → catalog-api → RabbitMQ → payments-api → RabbitMQ → catalog-api → notifications-function
-```
+> Esse bloco é um extra — a Opção A não pede trace. Mas sem ele, depurar fluxo assíncrono é adivinhar.
+>
+> Acabei de fazer uma compra. Ela devolveu **duzentos e dois**, Accepted, não duzentos: a compra é
+> assíncrona por desenho. O catálogo aceitou o pedido e publicou o evento; quem decide é o pagamento,
+> depois.
 
-Na última verificação, o maior trace tinha **11 spans atravessando os quatro serviços**. Abra o span
-do pagamento e mostre os atributos de negócio: `fcg.order.id`, `fcg.payment.status`,
-`fcg.payment.rule`.
+**MOSTRE:** navegador em `localhost:16686`. Busque o serviço `catalog-api`, abra o trace mais longo,
+expanda os spans.
+
+**FALE:**
+
+> E é aqui que o assíncrono fica visível. Esse é **um único trace**, e ele atravessa os quatro
+> serviços: começou no `users-api`, passou pelo catálogo, foi pela fila até o pagamento, voltou pela
+> fila, e terminou na função de notificação.
+>
+> Onze spans. Isso só fecha porque todos os publishers estão instrumentados e o contexto do trace
+> viaja **dentro** da mensagem do RabbitMQ.
+
+**MOSTRE:** clique no span do pagamento e abra os atributos (`fcg.order.id`, `fcg.payment.status`,
+`fcg.payment.rule`).
+
+**FALE:**
+
+> E no span do pagamento tem atributo de negócio: qual pedido, qual status, qual regra decidiu. Dá
+> para responder "por que **este** pagamento foi recusado" sem abrir log.
+>
+> Uma ressalva honesta: isso é best-effort por desenho. Se alguém publicar um evento sem
+> instrumentação, o consumidor começa um trace novo e a corrente quebra. A gente sabe onde isso pode
+> acontecer.
 
 ---
 
-### 13:30–16:00 · Requisito 4: NoSQL
+## Bloco 6 · 13:30–16:00 · Requisito 4 — NoSQL
+
+**MOSTRE:** terminal 2. Cole o bloco inteiro — ele cria um **usuário novo** antes de avaliar:
 
 ```bash
-# avaliação com documento flexível
-curl -s -o /dev/null -w '%{http_code}\n' -X POST -H "$H" -H "Authorization: Bearer $TOKEN" \
+# Usuário NOVO a cada tomada. Sem isto, a segunda tomada quebra: o índice unique já teria
+# registrado a avaliação da primeira, e o 201 sairia como 409 antes da hora.
+EA="avaliador-$(date +%s)@fcg.com"
+curl -s -o /dev/null -X POST -H "$H" -H 'Content-Type: application/json' \
+  -d "{\"nome\":\"Avaliador\",\"email\":\"$EA\",\"senha\":\"Senha@123456\"}" $GW/api/v1/usuarios
+TA=$(curl -s -X POST -H "$H" -H 'Content-Type: application/json' \
+  -d "{\"email\":\"$EA\",\"senha\":\"Senha@123456\"}" $GW/api/v1/auth/login | jq -r .token)
+
+curl -s -o /dev/null -w 'avaliacao: %{http_code}\n' -X POST -H "$H" -H "Authorization: Bearer $TA" \
   -H 'Content-Type: application/json' \
   -d "{\"jogoId\":\"$JOGO\",\"nota\":5,\"titulo\":\"Ótimo\",\"comentario\":\"muito bom\",\"tags\":[\"rpg\"],\"contexto\":{\"plataforma\":\"PC\",\"horasJogadas\":42}}" \
-  $GW/api/v1/avaliacoes        # 201
-
-# o MESMO usuário no MESMO jogo -> 409, e quem recusa é o BANCO
-curl -s -o /dev/null -w '%{http_code}\n' -X POST -H "$H" -H "Authorization: Bearer $TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d "{\"jogoId\":\"$JOGO\",\"nota\":1,\"titulo\":\"Duplicada\",\"comentario\":\"x\",\"tags\":[]}" \
-  $GW/api/v1/avaliacoes        # 409
-
-# agregação: média e distribuição
-curl -s -H "$H" -H "Authorization: Bearer $TOKEN" $GW/api/v1/jogos/$JOGO/avaliacoes/resumo | jq
+  $GW/api/v1/avaliacoes
 ```
 
-No terminal 4 (`mongosh`):
+**FALE:**
+
+> Quarto requisito: NoSQL. A funcionalidade é avaliação de jogo, em MongoDB, com o driver nativo.
+>
+> Acabei de criar uma avaliação. Duzentos e um. E repare no corpo que eu mandei: tem um campo
+> `contexto`, com plataforma e horas jogadas — um sub-documento **sem esquema fixo**.
+
+**MOSTRE:** repita a mesma chamada, mudando só a nota:
+
+```bash
+curl -s -o /dev/null -w 'duplicada: %{http_code}\n' -X POST -H "$H" -H "Authorization: Bearer $TA" \
+  -H 'Content-Type: application/json' \
+  -d "{\"jogoId\":\"$JOGO\",\"nota\":1,\"titulo\":\"Duplicada\",\"comentario\":\"x\",\"tags\":[]}" \
+  $GW/api/v1/avaliacoes
+```
+
+> Note o `$TA`: é o **mesmo** usuário da chamada anterior. O índice é por par jogo + usuário — com
+> outro token o retorno seria 201, e a demonstração não provaria nada.
+
+**FALE:**
+
+> Agora o **mesmo usuário** avaliando o **mesmo jogo** de novo. Quatrocentos e nove, conflito.
+>
+> E a parte importante: quem recusou **não foi um `if` na aplicação**. Foi o banco, por um índice
+> unique. Validar na aplicação deixa brecha em corrida — duas requisições simultâneas passam as duas.
+> O índice não deixa.
+
+**MOSTRE:** terminal 4 (`mongosh`):
 
 ```javascript
 use catalogdb
-db.avaliacoes.findOne()          // mostre tags[] e o sub-documento contexto LIVRE
-db.avaliacoes.getIndexes()       // ix_jogo_data e ux_jogo_usuario (unique)
+db.avaliacoes.getIndexes()
 ```
 
-**O ponto:** o 409 não vem de um `if` na aplicação — vem do índice **unique** do MongoDB. E o
-`contexto` é um sub-documento sem esquema fixo, que é justamente o que justifica NoSQL aqui em vez de
-uma coluna a mais no relacional.
+**FALE:**
+
+> Aqui estão os índices. O `ux_jogo_usuario`, que é o unique que acabou de recusar. E o
+> `ix_jogo_data`, composto, que serve a listagem paginada por jogo.
+
+**MOSTRE:**
+
+```javascript
+db.avaliacoes.findOne()
+```
+
+**FALE:**
+
+> E esse é o documento. Tags como array, e o `contexto` como sub-documento livre.
+>
+> É isso que justifica NoSQL aqui, e não uma coluna a mais no relacional: cada avaliação pode trazer
+> um contexto diferente, sem migração de esquema.
+
+**MOSTRE:** terminal 2:
+
+```bash
+curl -s -H "$H" -H "Authorization: Bearer $TOKEN" $GW/api/v1/jogos/$JOGO/avaliacoes/resumo | jq
+```
+
+**FALE:**
+
+> E o resumo é um aggregation pipeline no Mongo: média e distribuição de notas calculadas no banco,
+> não trazendo tudo para a memória da aplicação.
 
 ---
 
-### 16:00–18:00 · Requisito 5: Cache distribuído
+## Bloco 7 · 16:00–18:00 · Requisito 5 — Cache distribuído
+
+**MOSTRE:** terminal 2:
 
 ```bash
-# primeira chamada (miss) e segunda (hit)
-curl -s -o /dev/null -w 'miss: %{time_total}s\n' -H "$H" -H "Authorization: Bearer $TOKEN" $GW/api/v1/jogos
-curl -s -o /dev/null -w 'hit:  %{time_total}s\n' -H "$H" -H "Authorization: Bearer $TOKEN" $GW/api/v1/jogos
+curl -s -o /dev/null -w 'primeira: %{time_total}s\n' -H "$H" -H "Authorization: Bearer $TOKEN" $GW/api/v1/jogos
+curl -s -o /dev/null -w 'segunda:  %{time_total}s\n' -H "$H" -H "Authorization: Bearer $TOKEN" $GW/api/v1/jogos
+```
 
-# as chaves, com a GERAÇÃO embutida no nome
+**FALE:**
+
+> Quinto requisito: cache distribuído, com Redis.
+>
+> Duas chamadas iguais. A primeira vai ao banco, a segunda vem do cache.
+
+**MOSTRE:**
+
+```bash
 kubectl -n fcg exec deploy/redis -- redis-cli --scan --pattern 'fcg:catalog:*'
 kubectl -n fcg exec deploy/redis -- redis-cli GET fcg:catalog:gen:jogos
 ```
 
-Saída (medida):
+**FALE:**
 
-```
-fcg:catalog:jogos:lista:g1:p1:t1:gentodos      <- o "g1" é a geração
-fcg:catalog:gen:jogos
-fcg:catalog:gen:avaliacoes:<jogoId>
-fcg:catalog:avaliacoes:resumo:<jogoId>
-gen:jogos = 1
-```
+> E aqui está o desenho que eu queria mostrar. Olhe o nome da chave da listagem: ela tem um `g` e um
+> número no meio. Esse número é a **geração** do cache.
+>
+> Guarde o valor da geração, porque eu vou atualizar um jogo agora.
 
-Agora atualize o jogo e mostre a geração **incrementada** e a chave nova nascendo ao lado da antiga.
-
-> ⚠️ Reenvie os **valores originais** do jogo, mudando só o que você quiser mostrar. Um PUT com corpo
-> incompleto sobrescreve descrição e preço, e o dado de demonstração fica alterado no meio do vídeo.
+**MOSTRE:**
 
 ```bash
 curl -s -o /dev/null -w 'PUT: %{http_code}\n' -X PUT -H "$H" -H "Authorization: Bearer $TOKEN" \
@@ -295,100 +504,132 @@ curl -s -o /dev/null -w 'PUT: %{http_code}\n' -X PUT -H "$H" -H "Authorization: 
   -d '{"titulo":"CodeQuest: A Jornada do Desenvolvedor","descricao":"Um RPG educacional onde você aprende programação enquanto evolui seu personagem.","genero":2,"preco":49.90,"dataLancamento":"2024-03-15T00:00:00Z"}' \
   $GW/api/v1/jogos/$JOGO
 
-kubectl -n fcg exec deploy/redis -- redis-cli GET fcg:catalog:gen:jogos     # agora 2
+kubectl -n fcg exec deploy/redis -- redis-cli GET fcg:catalog:gen:jogos
 curl -s -o /dev/null -H "$H" -H "Authorization: Bearer $TOKEN" "$GW/api/v1/jogos?pagina=1&tamanhoPagina=1"
 kubectl -n fcg exec deploy/redis -- redis-cli --scan --pattern 'fcg:catalog:jogos:lista:*'
 ```
 
-Saída (medida):
+**FALE:**
 
-```
-gen:jogos = 2
-fcg:catalog:jogos:lista:g0:p1:t1:gentodos      <- órfã: ninguém mais consulta
-fcg:catalog:jogos:lista:g2:p1:t1:gentodos      <- a nova
-```
+> A geração subiu um. E na próxima consulta nasceu uma chave nova, com o número novo.
+>
+> A chave antiga continua ali — mas ninguém mais pergunta por ela, e o TTL a recolhe sozinha.
+>
+> É isso que eu quero destacar: invalidar o cache aqui é **um `INCR`**, uma operação constante. Não tem
+> `KEYS`, não tem varredura, não tem apagar em massa. Em Redis, varrer chave para invalidar é o jeito
+> clássico de derrubar produção.
 
-**O ponto:** invalidar é um `INCR` **O(1)** numa chave de geração — sem `KEYS`, sem varredura, sem
-apagar em massa. A chave antiga fica órfã: ninguém mais a consulta, e o TTL a recolhe sozinho. Mostrar
-as duas lado a lado **é** a demonstração.
+**MOSTRE:** nada novo — fale olhando para o terminal.
 
-Mencione o segundo uso do Redis: **store de idempotência** da Function, com `SET NX EX` atômico, e ali
-**fail-closed** (ao contrário do cache dos serviços, que é fail-open). Instância **dedicada e
-durável**, com `noeviction` e AOF — ADR 0006.
+**FALE:**
+
+> E o Redis tem um segundo uso nesta plataforma: ele é o controle de idempotência da função de
+> notificação, com `SET NX`, para não mandar o mesmo e-mail duas vezes.
+>
+> Mas esse é uma **instância separada**, configurada como banco durável, com `noeviction` e persistência
+> ligada. E a razão é direta: o Redis de cache usa `allkeys-lru`, ele **descarta** chave quando falta
+> memória. Se a chave de idempotência morresse assim, o cliente receberia e-mail repetido. Cache pode
+> perder chave; controle de idempotência não pode.
 
 ---
 
-### 18:00–19:15 · Fluxo completo, de ponta a ponta
+## Bloco 8 · 18:00–19:15 · Fluxo completo
 
-Uma compra inteira, do cadastro à notificação:
+**MOSTRE:** terminal 2, cole o bloco inteiro:
 
 ```bash
 E="video-$(date +%s)@fcg.com"
-curl -s -o /dev/null -w 'cadastro:  %{http_code}\n' -X POST -H "$H" -H 'Content-Type: application/json' \
+curl -s -o /dev/null -w 'cadastro: %{http_code}\n' -X POST -H "$H" -H 'Content-Type: application/json' \
   -d "{\"nome\":\"Demo Video\",\"email\":\"$E\",\"senha\":\"Senha@123456\"}" $GW/api/v1/usuarios
 T=$(curl -s -X POST -H "$H" -H 'Content-Type: application/json' \
   -d "{\"email\":\"$E\",\"senha\":\"Senha@123456\"}" $GW/api/v1/auth/login | jq -r .token)
-curl -s -o /dev/null -w 'compra:    %{http_code}\n' -X POST -H "$H" -H "Authorization: Bearer $T" \
+curl -s -o /dev/null -w 'compra:   %{http_code}\n' -X POST -H "$H" -H "Authorization: Bearer $T" \
   -H 'Content-Type: application/json' -d "{\"jogoId\":\"$JOGO\"}" $GW/api/v1/biblioteca
 sleep 8
-curl -s -H "$H" -H "Authorization: Bearer $T" $GW/api/v1/biblioteca | jq -r '.[0].titulo // .itens[0].titulo'
+echo "na biblioteca: $(curl -s -H "$H" -H "Authorization: Bearer $T" $GW/api/v1/biblioteca | jq -r '.[0].titulo')"
 ```
 
-E a notificação, **no MongoDB** — não no log do pod:
+**FALE:**
+
+> Para fechar, o fluxo inteiro de uma vez: cadastro, login, compra.
+>
+> A compra devolveu duzentos e dois, e oito segundos depois o jogo **está** na biblioteca. Nesse
+> intervalo, o evento foi para a fila, o pagamento aprovou, publicou de volta, e o catálogo gravou.
+> Nenhuma dessas quatro etapas esperou pela outra.
+
+**MOSTRE:**
 
 ```bash
 kubectl -n fcg exec mongodb-0 -- mongosh --quiet notificationsdb \
   --eval "db.notifications.find({Recipient:'$E'}).forEach(d=>print(d.Type+' -> '+d.Recipient+' | '+d.Subject))"
 ```
 
-Saída esperada:
+**FALE:**
 
-```
-UserCreatedEvent      -> video-...@fcg.com | Bem-vindo(a) à FIAP Cloud Games
-PaymentProcessedEvent -> video-...@fcg.com | Confirmação de compra
-```
-
-**Por que consultar o Mongo e não o log:** a Function já voltou a zero quando você olha, e o log morre
-com o pod. O histórico é durável. **É a forma confiável de mostrar a notificação no vídeo.**
-
-**Diga o que esse `Recipient` significa:** o `PaymentProcessedEvent` só carrega o `UserId`. A Function
-consulta um endpoint **interno** do `users-api` com um token de **serviço**, assinado por uma chave
-**diferente** da dos usuários — a chave dos usuários é compartilhada com `catalog-api` e Kong, e quem
-a tem assina até um token de Administrador. Está na ADR 0007.
+> E as notificações desse usuário: duas. Boas-vindas, do cadastro, e confirmação de compra, do
+> pagamento aprovado.
+>
+> Repare no destinatário: é o **e-mail** dele. Isso parece óbvio, mas não era. O evento de pagamento
+> só carrega o ID do usuário — a confirmação saía endereçada a um ObjectId. A gente abriu issue,
+> e hoje a função consulta um endpoint interno do `users-api` com um token de **serviço**, assinado com
+> uma chave **diferente** da chave dos usuários. Porque a chave dos usuários é compartilhada com o
+> catálogo e com o gateway: quem a tem assina qualquer token, inclusive de administrador. Dar isso a
+> uma função só para ler um e-mail seria privilégio demais.
+>
+> E eu estou consultando o MongoDB, não o log do pod, por um motivo: o pod já voltou a zero. O log
+> morreu com ele; o histórico é durável.
 
 ---
 
-### 19:15–20:00 · Fechamento
+## Bloco 9 · 19:15–20:00 · Fechamento
+
+**MOSTRE:** terminal 5:
 
 ```bash
-./scripts/verify-fase3.sh          # PRONTO PARA GRAVAR (sem pendências)
+./scripts/verify-fase3.sh
 ```
 
-Mostre rapidamente:
+Deixe terminar em "PRONTO PARA GRAVAR (sem pendências)".
 
-- o `docs/adr/` — sete ADRs, cada uma com alternativas descartadas;
-- a seção **"Pendências conhecidas"** do relatório. **Cite a issue aberta em voz alta.** Assumir uma
-  intermitência de teste conhecida, medida e documentada pesa a favor, não contra.
+**FALE:**
+
+> Fechando: esse script é o checklist da entrega rodando contra o cluster de verdade. Os cinco
+> requisitos, mais as imagens conferidas.
+
+**MOSTRE:** abra a pasta `docs/adr/` no editor, mostre os sete arquivos.
+
+**FALE:**
+
+> E as decisões estão registradas: sete ADRs, cada uma com as alternativas que a gente **descartou** e
+> o porquê. Não só o que escolhemos.
+>
+> Fizemos também o que o requisito de serverless pede por inteiro: o `notifications-api` antigo saiu
+> do compose, dos manifestos e do cluster, e o repositório está deprecado e arquivado — com um
+> `DEPRECATED.md` explicando o port. Não deletamos de propósito: ele é a rastreabilidade da
+> refatoração.
+>
+> Obrigado.
 
 ---
 
-## O que NÃO prometer na narração
+# O que NÃO falar
 
-- **"O trace sempre fecha"** — ele fecha porque TODOS os publishers estão instrumentados. Um publisher
-  sem OpenTelemetry publica sem o header `MT-Activity-Id`, e o span do consumidor nasce como trace
-  próprio: a correlação é best-effort, **por desenho**. Vale dizer isso ao mostrar o Jaeger.
-- **Não prometa o span do MongoDB** — ele não aparece: o driver 3.x exige um pacote de diagnóstico que
+- **Não diga "o trace sempre fecha".** Ele fecha porque todos os publishers estão instrumentados; um
+  publisher sem OpenTelemetry quebra a corrente. O script do Bloco 5 já diz isso do jeito certo.
+- **Não prometa o span do MongoDB.** Ele não aparece — o driver 3.x exige um pacote de diagnóstico que
   a plataforma não usa.
-- **Não prometa notificação no `docker compose`** — no compose ninguém consome as filas desde a
-  remoção do `notifications-api`. O fluxo de notificação só é observável **no cluster**.
-- **Não diga "todas as issues estão fechadas"** — há uma aberta (`catalog-api#24`), de propósito.
-- **Não rode `kubectl rollout status` na `notifications-function`** — ela está em 0 réplica por
+- **Não prometa notificação no `docker compose`.** Ninguém consome as filas lá desde a remoção do
+  `notifications-api`. O fluxo de notificação só é observável **no cluster**.
+- **Não rode `kubectl rollout status` na `notifications-function`.** Ela está em zero réplica por
   desenho, e o comando espera para sempre por um pod que corretamente não existe.
 
-## Duas armadilhas que estragam a tomada
+# Duas armadilhas que estragam a tomada
 
-1. **`./scripts/smoke-test.sh` apaga o usuário que cria.** Se você rodar o smoke e depois for procurar
-   a notificação daquele usuário, não vai achar — e parece defeito. Use o bloco das 18:00, que
-   preserva o usuário.
-2. **Port-forward sem espera de prontidão** devolve `HTTP 000` ou `404` e parece bug da aplicação.
-   Sempre espere o `until curl ...` da seção 0.2.
+1. **`./scripts/smoke-test.sh` apaga o usuário que cria.** Se rodar o smoke e depois procurar a
+   notificação daquele usuário, não vai achar — e parece defeito. Use o Bloco 8, que preserva o
+   usuário.
+2. **Port-forward sem espera de prontidão** devolve `HTTP 000` e parece bug da aplicação. Use sempre o
+   `until curl` da seção 0.2.
+3. **O Bloco 6 não se repete com o mesmo usuário.** O índice unique é por par jogo + usuário: se a
+   primeira tomada já gravou a avaliação, na segunda o *primeiro* `curl` devolve 409 e a demonstração
+   inverte de sentido. O bloco já cria um usuário novo a cada execução — não troque por `$TOKEN`.
