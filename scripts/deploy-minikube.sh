@@ -166,14 +166,45 @@ for fn in "${FUNCTIONS[@]}"; do
 done
 
 echo "==> Carregando imagens no minikube"
-# Com tag nova a cada commit o `image load` nunca colide e, portanto, nunca no-opa — que era o
-# modo de falha da #40. Não há mais nenhum `docker save | minikube ssh docker load` aqui: além de
-# ser remediação e não conserto, aquele pipe só funciona com `--native-ssh=false` (a forma padrão
-# não encaminha stdin: "requested load from stdin, but stdin is empty").
+# Com tag nova a cada commit o `image load` não colide e, portanto, não no-opa — que era o modo de
+# falha da #40. Não há mais nenhum `docker save | minikube ssh docker load` aqui: além de ser
+# remediação e não conserto, aquele pipe só funciona com `--native-ssh=false` (a forma padrão não
+# encaminha stdin: "requested load from stdin, but stdin is empty").
+#
+# MAS A PREMISSA TEM UM BURACO, e ele foi medido: "tag nova a cada commit" só vale quando se faz
+# deploy DEPOIS de um commit. Reimplantar o MESMO commit depois de um rebuild — ou implantar com a
+# árvore suja sem que o sufixo mude — gera digest NOVO sob a tag ANTIGA. Aí o load colide de novo,
+# no-opa em silêncio, e o pod segue servindo o binário velho: a #40 voltando por outra porta.
+#
+# Então, em vez de confiar na premissa, CONFERIMOS: id no nó == id no host. Se divergir, o load
+# no-opou — e a correção é a mesma coisa que já funciona aqui, uma tag que não colide.
+LISTA_NO="$(minikube ssh -- sudo crictl images 2>/dev/null </dev/null || true)"
+MAPA_CORRIGIDO="$(mktemp)"
+
 while IFS="$(printf '\t')" read -r nome tag; do
   [ -n "$nome" ] || continue
   minikube image load "${nome}:${tag}"
+
+  id_host="$(docker image inspect "${nome}:${tag}" --format '{{.Id}}' 2>/dev/null | sed 's/^sha256://' | cut -c1-12)"
+  id_no="$(printf '%s\n' "$LISTA_NO" | awk -v n="$nome" -v t="$tag" '$1==n && $2==t {print $3}' \
+           | sed 's/^sha256://' | cut -c1-12)"
+
+  if [ -n "$id_host" ] && [ -n "$id_no" ] && [ "$id_host" != "$id_no" ]; then
+    nova="${tag}-r$(date +%s)"
+    echo "   ! ${nome}:${tag} COLIDIU (nó=${id_no} host=${id_host}) — o load no-opou."
+    echo "     Recarregando como ${nome}:${nova}, que não colide."
+    docker tag "${nome}:${tag}" "${nome}:${nova}"
+    minikube image load "${nome}:${nova}"
+    tag="$nova"
+  fi
+
+  printf '%s\t%s\n' "$nome" "$tag" >> "$MAPA_CORRIGIDO"
 done < "$MAPA_TAGS"
+
+# O mapa alimenta a renderização dos manifestos mais abaixo: corrigi-lo aqui faz o `image:` do spec
+# mudar junto, e o rollout acontece NATURALMENTE — que é o mecanismo que a #40 provou ser o único
+# que funciona. `rollout restart` com o spec igual não resolve nada.
+mv "$MAPA_CORRIGIDO" "$MAPA_TAGS"
 
 echo "==> Migração Deployment→StatefulSet do MongoDB (kinds diferentes; no-op em cluster limpo)"
 kubectl -n fcg delete deployment mongodb --ignore-not-found
