@@ -7,7 +7,7 @@ no cluster ou nos manifestos versionados. Você pode ler em voz alta sem revisar
 Limite: **20 minutos**. Grave em blocos e junte na edição. Cada bloco é independente: se um sair
 ruim, regrave só ele.
 
-> **Ritmo:** são **1.747 palavras** de fala — cerca de **12min30** a 140 palavras por minuto. Os
+> **Ritmo:** são **1.755 palavras** de fala — cerca de **12min30** a 140 palavras por minuto. Os
 > outros 7 minutos são digitar, esperar comando e deixar o KEDA acordar o pod. O tempo sobra de
 > propósito: se você estiver adiantado, **não corra**.
 
@@ -35,6 +35,61 @@ Se não terminar verde, **não grave**.
 
 > ⚠️ O erro mais traiçoeiro aqui é o `kubectl` apontando para outro cluster: os comandos respondem
 > normalmente, só dizem "not found". Parece que a plataforma quebrou, quando é só o contexto errado.
+
+## 0.1b Se o deploy travar no MongoDB (depois de um reboot)
+
+**Sintoma.** O `deploy-minikube.sh` morre com `error: timed out waiting for the condition`, o
+`mongodb-0` fica `0/1` com o contador de restarts subindo, e os três serviços entram em
+`CrashLoopBackOff` com `connection refused`.
+
+É enganoso: parece que os serviços quebraram. Eles estão bem — só não têm banco para conectar.
+
+**Confirme antes de agir:**
+
+```bash
+kubectl -n fcg exec mongodb-0 -- mongosh --quiet --eval 'try{rs.status()}catch(e){print(e.codeName)}'
+```
+
+Se responder **`InvalidReplicaSetConfig`**, é este problema.
+
+**A causa.** Quem executa o `rs.initiate` é a *probe de readiness* do MongoDB, e ela tem timeout de
+**8 segundos**. Com a máquina carregada — que é o estado típico logo depois de um boot, com o
+Spotlight reindexando — o `initiate` não termina a tempo e a probe **mata o comando no meio**. O
+replica set fica com config parcial, a tentativa seguinte encontra `InvalidReplicaSetConfig`, e o
+laço se repete para sempre. No log do Mongo o par aparece junto:
+
+```
+I REPL    | replSetInitiate admin command received from client
+I -       | Interrupted operation as its client disconnected      <- 5s depois
+```
+
+**Rodar o deploy de novo NÃO resolve** — ele volta a esbarrar no mesmo timeout, antes de chegar a
+qualquer coisa que conserte.
+
+**O conserto** é rodar o mesmo comando da probe, porém sem o timeout dela, deixando terminar:
+
+```bash
+# 1) reconfigura o replica set sem pressa
+kubectl -n fcg exec mongodb-0 -- mongosh --quiet --eval '
+  try {
+    print(JSON.stringify(rs.initiate({_id:"rs0", members:[{_id:0, host:"mongodb:27017"}]})));
+  } catch (e) {
+    print("initiate: " + e.codeName + " — forcando reconfig");
+    print(JSON.stringify(rs.reconfig({_id:"rs0", members:[{_id:0, host:"mongodb:27017"}]}, {force:true})));
+  }'
+
+# 2) espere virar PRIMARY (leva segundos)
+kubectl -n fcg exec mongodb-0 -- mongosh --quiet --eval 'print(db.hello().isWritablePrimary)'   # true
+
+# 3) tire os serviços do backoff — eles não tentam de novo sozinhos em tempo útil
+#    (um seletor só, com `in`: dois `-l` seguidos fazem o kubectl usar apenas o ÚLTIMO)
+kubectl -n fcg delete pod -l 'app in (users-api,catalog-api,payments-api)' --wait=false
+```
+
+`AlreadyInitialized` no passo 1 é **esperado**: significa que o `initiate` anterior chegou a gravar
+algo antes de ser morto. É exatamente por isso que existe o `reconfig` com `force` no `catch`.
+
+Depois disso, siga o fluxo normal: `verify-fase3.sh` tem de fechar em "PRONTO PARA GRAVAR".
 
 ## 0.2 Port-forwards, com espera de prontidão
 
@@ -628,7 +683,7 @@ Deixe terminar em "PRONTO PARA GRAVAR (sem pendências)".
 - **Não rode `kubectl rollout status` na `notifications-function`.** Ela está em zero réplica por
   desenho, e o comando espera para sempre por um pod que corretamente não existe.
 
-# Duas armadilhas que estragam a tomada
+# Armadilhas que estragam a tomada
 
 1. **`./scripts/smoke-test.sh` apaga o usuário que cria.** Se rodar o smoke e depois procurar a
    notificação daquele usuário, não vai achar — e parece defeito. Use o Bloco 8, que preserva o
@@ -638,3 +693,13 @@ Deixe terminar em "PRONTO PARA GRAVAR (sem pendências)".
 3. **O Bloco 6 não se repete com o mesmo usuário.** O índice unique é por par jogo + usuário: se a
    primeira tomada já gravou a avaliação, na segunda o *primeiro* `curl` devolve 409 e a demonstração
    inverte de sentido. O bloco já cria um usuário novo a cada execução — não troque por `$TOKEN`.
+4. **A plataforma pode estar rodando em DOBRO.** O `docker compose` do `orchestration` sobe a mesma
+   plataforma que o cluster — MongoDB, RabbitMQ, Redis, Prometheus, Grafana, Jaeger e os três
+   serviços. Os containers têm política de restart, então **voltam sozinhos depois de um boot**, sem
+   ninguém pedir. Com as duas versões no ar, a máquina satura, as probes começam a estourar timeout e
+   o cluster parece quebrado. Confira e, se estiver, pare só o projeto do compose:
+
+   ```bash
+   docker compose ls | grep fcg   # "running(9)" = tudo no ar em paralelo; SEM SAÍDA = parado, que é o que você quer
+   docker compose -p fcg stop     # reversível: docker compose up -d
+   ```
