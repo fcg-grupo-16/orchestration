@@ -250,7 +250,7 @@ curl -s -o /dev/null -w '%{http_code}\n' -H "$H" -H 'Content-Type: application/j
 
 **FALE:**
 
-> Aí está. O pod nasceu em cerca de dez segundos, a partir de zero, porque chegou mensagem.
+> Aí está. O pod nasceu em poucos segundos, a partir de zero, porque chegou mensagem.
 
 **MOSTRE:**
 
@@ -279,7 +279,8 @@ esperar na gravação, corte aqui e rode `./scripts/keda-test.sh` no lugar.
 **FALE:**
 
 > E agora o outro lado do requisito, que é o que economiza recurso: sem mensagem na fila, o KEDA
-> derruba o pod e volta para zero. Aconteceu cerca de setenta segundos depois do disparo.
+> derruba o pod e volta para zero. Acontece pouco mais de um minuto depois do disparo — o
+> `cooldownPeriod` é de sessenta segundos.
 >
 > Esse ciclo inteiro, zero, um, zero, tem um script que prova em doze asserções.
 
@@ -486,15 +487,19 @@ curl -s -o /dev/null -w 'segunda:  %{time_total}s\n' -H "$H" -H "Authorization: 
 
 ```bash
 kubectl -n fcg exec deploy/redis -- redis-cli --scan --pattern 'fcg:catalog:*'
-kubectl -n fcg exec deploy/redis -- redis-cli GET fcg:catalog:gen:jogos
 ```
+
+> ⚠️ **Não rode `GET fcg:catalog:gen:jogos` aqui.** Num cache recém-subido essa chave **ainda não
+> existe** — o `GET` imprime vazio, e você estaria dizendo "guarde o valor da geração" na frente de uma
+> saída em branco. Ausência **é** geração zero, e é por isso que o nome da chave traz `g0`. O contador
+> só passa a existir no primeiro `INCR`, que é o próximo passo. Leia a geração **pelo nome da chave**.
 
 **FALE:**
 
 > E aqui está o desenho que eu queria mostrar. Olhe o nome da chave da listagem: ela tem um `g` e um
 > número no meio. Esse número é a **geração** do cache.
 >
-> Guarde o valor da geração, porque eu vou atualizar um jogo agora.
+> Guarde esse número, porque eu vou atualizar um jogo agora.
 
 **MOSTRE:**
 
@@ -511,7 +516,7 @@ kubectl -n fcg exec deploy/redis -- redis-cli --scan --pattern 'fcg:catalog:jogo
 
 **FALE:**
 
-> A geração subiu um. E na próxima consulta nasceu uma chave nova, com o número novo.
+> A geração subiu. E na próxima consulta nasceu uma chave nova, com o número novo — do lado da antiga.
 >
 > A chave antiga continua ali — mas ninguém mais pergunta por ela, e o TTL a recolhe sozinha.
 >
