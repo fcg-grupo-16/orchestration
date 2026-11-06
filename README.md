@@ -85,6 +85,8 @@ flowchart TB
 | [0004](docs/adr/0004-nosql-avaliacoes.md) | Avaliações em MongoDB com o driver nativo |
 | [0005](docs/adr/0005-cache-redis-invalidacao-por-geracao.md) | Cache em Redis com invalidação por geração de chave |
 | [0006](docs/adr/0006-redis-dedicado-para-idempotencia.md) | Redis dedicado e durável para o store de idempotência |
+| [0007](docs/adr/0007-consulta-de-contato-servico-a-servico.md) | Consulta de contato serviço-a-serviço, com chave de assinatura própria |
+| [0008](docs/adr/0008-provedor-de-nuvem-aws.md) | **Fase 4:** AWS como provedor de nuvem |
 
 ## Microsserviços
 

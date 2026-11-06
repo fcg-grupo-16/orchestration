@@ -5,6 +5,35 @@ Todas as mudanças relevantes deste repositório de orquestração são document
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/)
 e o versionamento adere a [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [0.26.0] - 2026-11-05
+
+### Adicionado
+- **ADR 0008 — AWS como provedor de nuvem**, primeira decisão da Fase 4
+  ([#61](https://github.com/fcg-grupo-16/orchestration/issues/61)). A escolha amarra cinco
+  entregáveis de uma vez — cluster gerenciado, registry privado, busca, segredos e a identidade que o
+  CI usa para implantar.
+
+  **O que decidiu foi a busca.** Para NoSQL e cache o enunciado aceita container; para busca exige
+  serviço gerenciado e nomeia as opções (`Amazon OpenSearch`, `Elastic Cloud` ou Elasticsearch
+  gerenciado). Azure e GCP não têm Elasticsearch de primeira parte — o AI Search da Azure não é
+  compatível com a API nomeada —, o que deixaria o Elastic Cloud via marketplace, com cobrança de
+  terceiro fora do plano educacional. Entre AWS e OCI, que têm OpenSearch gerenciado, decidiu o
+  acesso.
+
+  A ADR enfrenta a tensão aparente de rodar **Azure Functions na AWS**: pela
+  [ADR 0003](docs/adr/0003-serverless-azure-functions-keda.md) o host de Functions sempre foi
+  container em Kubernetes com KEDA, escolhido **contra** os planos hospedados da Azure. Rodá-lo no EKS
+  é a mesma arquitetura, noutro Kubernetes.
+
+  ⚠️ A verificação de **cota do plano educacional** fica pendente e **bloqueia o provisionamento** —
+  principalmente se EKS e OpenSearch Service estão liberados na modalidade do plano, e se as sessões
+  expiram destruindo recursos.
+
+### Corrigido
+- **A ADR 0007 não estava no índice de ADRs do README.** Foi criada na entrega da Fase 3 e a tabela
+  nunca recebeu a linha — um índice que omite uma decisão é pior que não ter índice, porque dá a
+  impressão de estar completo.
+
 ## [0.25.0] - 2026-09-14
 
 ### Alterado
