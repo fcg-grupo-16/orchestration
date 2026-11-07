@@ -182,7 +182,7 @@ A partir deste repositório:
 docker compose up --build
 ```
 
-Sobe RabbitMQ, MongoDB, Redis, a stack de observabilidade e os **3 microsserviços** (a
+Sobe RabbitMQ, MongoDB, Redis, OpenSearch, a stack de observabilidade e os **3 microsserviços** (a
 `notifications-function` não está no compose — ver a ressalva no fim desta seção).
 
 | Componente | Compose (host) | Kubernetes (port-forward) | Credencial |
@@ -198,6 +198,25 @@ Sobe RabbitMQ, MongoDB, Redis, a stack de observabilidade e os **3 microsserviç
 | RabbitMQ Management | <http://localhost:15672> | `kubectl -n fcg port-forward svc/rabbitmq 15672:15672` | guest / guest |
 | MongoDB | `mongodb://localhost:27017/?replicaSet=rs0` | `kubectl -n fcg port-forward svc/mongodb 27017:27017` | — |
 | Redis | `localhost:6379` | `kubectl -n fcg port-forward svc/redis 6379:6379` | — |
+| **OpenSearch** (Fase 4) | <http://localhost:9200> | — (no cluster será o domínio gerenciado, [#67](https://github.com/fcg-grupo-16/orchestration/issues/67)) | — (segurança desligada, só loopback) |
+
+> **OpenSearch é ambiente de desenvolvimento** (Fase 4, [#74](https://github.com/fcg-grupo-16/orchestration/issues/74)):
+> nó único e plugin de segurança desligado, por isso publicado só no loopback. Serve para desenvolver
+> a busca do `catalog-api` sem depender da conta na cloud — a API é a mesma do domínio gerenciado.
+> Dois comportamentos que surpreendem:
+>
+> - **`yellow` é o estado normal**, não falha. Num nó único, todo índice criado com a réplica padrão
+>   deixa o cluster `yellow`, porque a réplica não tem outro nó onde ficar. O healthcheck aceita
+>   `yellow`; só `red` é problema. Para ver `green` localmente, crie o índice com
+>   `"number_of_replicas": 0`.
+> - **Não há volume.** O índice é derivado do MongoDB, e `docker compose down` o apaga. É reconstruível
+>   — não existe dado que só esteja no OpenSearch.
+>
+> ```bash
+> docker compose up -d opensearch
+> curl -s localhost:9200/_cluster/health | jq '{status, number_of_nodes}'   # green ou yellow, 1 nó
+> curl -s localhost:9200 | jq -r .version.number                            # 2.19.0
+> ```
 
 > As portas do host podem estar **remapeadas nesta máquina** pelo `docker-compose.override.yml`
 > (gitignored). Confira com `docker compose ps`.
@@ -861,6 +880,10 @@ kubectl -n fcg exec statefulset/redis-idempotencia -- redis-cli config get maxme
 - **Cache (Fase 3):** `Redis__InstanceName` vai no **ConfigMap** de cada serviço (é só um prefixo
   de chave, não sensível); `Redis__ConnectionString` vai no **Secret**, por paridade com as demais
   connection strings — em produção ela carregaria credencial.
+- **Busca (Fase 4):** `OpenSearch__Endpoint` e `OpenSearch__IndiceJogos` no `catalog-api`. Endpoint
+  **ausente** desliga a busca — mesma convenção do `OTEL_EXPORTER_OTLP_ENDPOINT`, que mantém
+  `dotnet run` funcionando sem o serviço no ar. Por isso o ConfigMap do cluster ainda **não** tem as
+  duas chaves: elas entram quando o domínio gerenciado existir ([#67](https://github.com/fcg-grupo-16/orchestration/issues/67)).
 - A **chave JWT** (`JwtSettings__SecretKey`) **deve ser idêntica** em `users-api` (emite)
   e `catalog-api` (valida).
 - **Databases (database-per-service):** `usersdb` (users-api), `catalogdb` (catalog-api) e

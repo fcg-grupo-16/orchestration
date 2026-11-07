@@ -5,6 +5,29 @@ Todas as mudanças relevantes deste repositório de orquestração são document
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/)
 e o versionamento adere a [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [0.27.0] - 2026-11-07
+
+### Adicionado
+- **OpenSearch 2.19.0 no `docker-compose.yml`**, para desenvolver a busca avançada da Fase 4 sem
+  depender da conta na cloud ([#74](https://github.com/fcg-grupo-16/orchestration/issues/74)). Destrava
+  [catalog-api#30](https://github.com/fcg-grupo-16/catalog-api/issues/30) e
+  [#31](https://github.com/fcg-grupo-16/catalog-api/issues/31). Nó único, plugin de segurança
+  desligado e heap fixo de 512m; em produção será o domínio gerenciado da
+  [#67](https://github.com/fcg-grupo-16/orchestration/issues/67), com a mesma API.
+- `catalog-api` no compose passa a depender do OpenSearch com `service_healthy` e recebe
+  `OpenSearch__Endpoint` e `OpenSearch__IndiceJogos`. Endpoint ausente desliga a busca, por isso o
+  ConfigMap do cluster ainda não tem as chaves.
+
+### Decisões que divergem do texto da issue
+- **Porta só no loopback** (`127.0.0.1:9200`). Com o plugin de segurança desligado, quem alcança a
+  porta apaga índices sem credencial — mesmo raciocínio do Redis. Conferido que a LAN não alcança.
+- **Healthcheck aceita `yellow`.** Num nó único, todo índice criado com a réplica padrão deixa o
+  cluster `yellow`; exigir `green` derrubaria o check assim que o `catalog-api` criasse o índice.
+  O check usa `wait_for_status=yellow`, que ainda falha enquanto o cluster está `red`.
+- **`mem_limit: 1536m`**, que a issue não previa. Medido: ~925 MiB em repouso e ~970 MiB com 20 mil
+  documentos indexados e consulta fuzzy, sem OOM.
+- Sem `ulimit memlock`: só tem efeito com `bootstrap.memory_lock`, que não usamos.
+
 ## [0.26.0] - 2026-11-05
 
 ### Adicionado

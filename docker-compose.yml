@@ -1,4 +1,4 @@
-# FIAP Cloud Games (FCG) — Fase 2
+# FIAP Cloud Games (FCG) — Fase 4
 # Orquestração completa da plataforma de microsserviços.
 #
 # Os serviços são construídos a partir dos repositórios IRMÃOS deste repo.
@@ -95,6 +95,52 @@ services:
       timeout: 3s
       retries: 10
       start_period: 5s
+    restart: unless-stopped
+
+  # Motor de busca da Fase 4 — alimenta o /search do catalog-api (catalog-api#30 e #31).
+  #
+  # ⚠️ AMBIENTE DE DESENVOLVIMENTO, não o desenho de produção: nó único e plugin de segurança
+  # DESLIGADO. Em produção é o OpenSearch gerenciado da AWS (orchestration#67), com TLS e
+  # autenticação. A API é a mesma nos dois, então o código do catalog-api não muda — só o endereço.
+  #
+  # Sem volume de propósito: o índice é DERIVADO do MongoDB (fonte da verdade) e reconstruível a
+  # partir dele. `docker compose down` apaga o índice, e isso é aceitável — não há dado só aqui.
+  opensearch:
+    image: opensearchproject/opensearch:2.19.0   # tag PINADA, nunca :latest
+    container_name: fcg-opensearch
+    environment:
+      # Sem isto o OpenSearch tenta formar cluster, não encontra outros nós e NÃO SOBE.
+      discovery.type: single-node
+      # Sem isto ele exige HTTPS + senha de admin, e o catalog-api teria de carregar certificado
+      # para falar com um container local.
+      DISABLE_SECURITY_PLUGIN: "true"
+      # Heap FIXO da JVM. Sem teto, a JVM reserva metade da RAM do host e disputa memória com o
+      # resto da plataforma — que já tem histórico de probe estourando timeout por falta de recurso.
+      OPENSEARCH_JAVA_OPTS: "-Xms512m -Xmx512m"
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    ports:
+      # Loopback, como o redis: com o plugin de segurança desligado, QUALQUER cliente que alcance a
+      # porta lê, sobrescreve e apaga índices (`DELETE /_all`) sem credencial nenhuma.
+      - "127.0.0.1:9200:9200"
+    # Teto do CONTAINER acima do heap: a JVM usa memória fora do heap (metaspace, buffers diretos,
+    # threads). Medido: ~925 MiB em repouso e ~970 MiB com 20 mil documentos indexados e consulta
+    # fuzzy — 1,5 GiB deixa folga sem deixar a JVM crescer sem limite.
+    mem_limit: 1536m
+    healthcheck:
+      # `curl` existe dentro desta imagem. `wait_for_status=yellow` faz o check falhar enquanto o
+      # cluster está RED (subindo) — só responder HTTP não basta.
+      #
+      # YELLOW, e não GREEN, de propósito: num nó único, todo índice criado com a réplica padrão
+      # (number_of_replicas=1) deixa o cluster YELLOW — a réplica não tem outro nó onde ficar.
+      # Exigir green derrubaria o healthcheck assim que o catalog-api criasse o índice `jogos`.
+      test: ["CMD-SHELL", "curl -sf 'http://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=3s' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
     restart: unless-stopped
 
   # ---------------- Observabilidade (Fase 3, Opção A) ----------------
@@ -216,10 +262,18 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      # service_healthy, e não só o nome: sem a condição o compose sobe o catalog-api quando o
+      # container do OpenSearch EXISTE, não quando ele RESPONDE — a indexação falha e parece bug.
+      opensearch:
+        condition: service_healthy
     environment:
       ASPNETCORE_ENVIRONMENT: Production
       MongoDbSettings__ConnectionString: "mongodb://mongodb:27017/?replicaSet=rs0"
       MongoDbSettings__DatabaseName: "catalogdb"
+      # Busca avançada (Fase 4, catalog-api#30). Endpoint AUSENTE = busca desligada, mesma convenção
+      # do OTEL_EXPORTER_OTLP_ENDPOINT: mantém `dotnet run` funcionando sem OpenSearch no ar.
+      OpenSearch__Endpoint: "http://opensearch:9200"
+      OpenSearch__IndiceJogos: "jogos"
       # Cache distribuído (consumido a partir da catalog-api#21). Prefixo PRÓPRIO: mesma instância
       # de Redis, keyspace separado do users-api.
       Redis__ConnectionString: "redis:6379"
