@@ -56,7 +56,8 @@ Se responder **`InvalidReplicaSetConfig`**, é este problema.
 **8 segundos**. Com a máquina carregada — que é o estado típico logo depois de um boot, com o
 Spotlight reindexando — o `initiate` não termina a tempo e a probe **mata o comando no meio**. O
 replica set fica com config parcial, a tentativa seguinte encontra `InvalidReplicaSetConfig`, e o
-laço se repete para sempre. No log do Mongo o par aparece junto:
+laço se repete para sempre. No log do Mongo (`kubectl -n fcg logs mongodb-0 -c mongodb` — **sem o
+`-c` sai vazio**, porque o container padrão do Pod é o sidecar `mongosh`, ver a #71) o par aparece junto:
 
 ```
 I REPL    | replSetInitiate admin command received from client

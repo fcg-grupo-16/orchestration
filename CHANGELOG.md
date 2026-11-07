@@ -5,6 +5,42 @@ Todas as mudanças relevantes deste repositório de orquestração são document
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/)
 e o versionamento adere a [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [0.28.0] - 2026-11-07
+
+### Corrigido
+- **MongoDB morto por OOM pela própria `readinessProbe`**
+  ([#71](https://github.com/fcg-grupo-16/orchestration/issues/71)). O `mongosh` (~160 MB, um
+  runtime Node) rodava no mesmo container do `mongod`: na probe a cada 10 s e em todo `kubectl exec`
+  dos scripts. Com o cache do WiredTiger quente, o `mongod` sozinho ocupa ~390 MB num limite de
+  512Mi, e **a probe bastava para o kernel matar o banco**, sem nenhum comando manual. No restart o
+  oplog é reaplicado, a memória volta e o ciclo se repete. Reproduzido: restarts de 8 para 12 em
+  quatro minutos.
+
+  Subir o limite **não resolvia**, só deslocava o limiar. Reproduzido também com 768Mi: com a máquina
+  lenta, a probe estoura o timeout, o kubelet desiste mas o processo continua vivo, e as seguintes se
+  acumulam (quatro contadas) até o kernel matar o maior processo do cgroup, que é o banco.
+
+  **Conserto: sidecar `mongosh` no Pod do Mongo**, com orçamento de memória próprio. A probe passou
+  para ele, embrulhada em `timeout -s KILL 7` para não se acumular, e a anotação
+  `kubectl.kubernetes.io/default-container` faz todo `kubectl exec mongodb-0 -- mongosh` dos
+  scripts, do README e do roteiro cair nele **sem mudar nenhum script**. Medido: quatro shells
+  concorrentes estouram o sidecar e o kernel mata dois `mongosh`, com o `mongod` intocado.
+
+### Alterado
+- `mongod` com `--wiredTigerCacheSizeGB 0.25` explícito (era o piso implícito), limite de memória
+  512Mi → 768Mi e `requests` 256Mi → 512Mi, para casar com o consumo de regime com cache quente.
+- ⚠️ `kubectl logs mongodb-0` passa a mostrar o sidecar e sai **vazio**. O log do banco é
+  `kubectl logs mongodb-0 -c mongodb`. Documentado no manifesto, no README e no roteiro.
+- O comentário da #41 no manifesto, que dizia que OOM aqui era "carga artificial", foi corrigido:
+  aquela medição foi feita com o cache frio.
+
+### Verificado sem mudança
+- `users-api`, `catalog-api` e `payments-api` seguem com 512Mi. O pico medido após a bateria
+  completa foi de 150 a 218 MB, contando page cache, sem OOM, e ninguém roda shell dentro deles. O
+  `catalog-api` deve ser medido de novo quando ganhar o cliente do OpenSearch
+  ([catalog-api#30](https://github.com/fcg-grupo-16/catalog-api/issues/30)).
+- O compose não é afetado: lá o `mongodb` não tem `mem_limit`.
+
 ## [0.27.0] - 2026-11-07
 
 ### Adicionado
