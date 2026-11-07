@@ -288,6 +288,19 @@ MongoDB, `Deployment`+`Service` do RabbitMQ) e, para cada microsserviço, `Confi
 > `users-api` e `catalog-api` usam `?replicaSet=rs0`. Isso é **exigido pelo outbox transacional**
 > (transações multi-documento do Mongo requerem replica set), então o fluxo de cadastro funciona no
 > cluster igual ao compose. Confira com `kubectl -n fcg exec mongodb-0 -- mongosh --quiet --eval 'rs.status().ok'`.
+>
+> **O Pod do Mongo tem dois containers** ([#71](https://github.com/fcg-grupo-16/orchestration/issues/71)):
+> `mongodb` (só o `mongod`) e `mongosh` (sidecar com o cliente). O `mongosh` é um runtime Node de
+> ~160 MB. Quando rodava dentro do container do banco, a própria `readinessProbe` bastava para o kernel
+> matar o `mongod` por OOM depois que o cache esquentava. Agora a probe e todo `kubectl exec` rodam no
+> sidecar, que tem orçamento de memória próprio. Se um shell estourar, morre o shell, não o banco.
+>
+> | Para | Use |
+> |---|---|
+> | shell, scripts, consultas | `kubectl -n fcg exec -it mongodb-0 -- mongosh` (o sidecar é o container **padrão**) |
+> | **log do banco** | `kubectl -n fcg logs mongodb-0 -c mongodb` (⚠️ **sem `-c` sai vazio**: é o log do sidecar) |
+> | memória do banco | `kubectl -n fcg exec mongodb-0 -c mongodb -- cat /sys/fs/cgroup/memory.stat` |
+> | quem o kernel matou por OOM | `minikube ssh -- "sudo dmesg -T \| grep 'Killed process'"` |
 
 ### Forma rápida (script)
 

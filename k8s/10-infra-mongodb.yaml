@@ -25,55 +25,88 @@ spec:
     metadata:
       labels:
         app: mongodb
+      annotations:
+        # `kubectl exec mongodb-0 -- mongosh ...` (scripts, README, roteiro do vídeo) cai no
+        # SIDECAR, não no container do banco — sem precisar de `-c` em lugar nenhum. É o que
+        # mantém todo cliente fora do orçamento de memória do mongod (issue #71, abaixo).
+        # ⚠️ Efeito colateral: `kubectl logs mongodb-0` também cai no sidecar e sai VAZIO, sem erro.
+        # O log do banco é `kubectl logs mongodb-0 -c mongodb`.
+        kubectl.kubernetes.io/default-container: mongosh
     spec:
+      # POR QUE DOIS CONTAINERS (issue #71).
+      #
+      # O `mongosh` é um cliente Node: cada invocação sobe um runtime inteiro, ~160 MB de memória
+      # anônima de pico (medido). Até a #71 ele rodava DENTRO do container do mongod — na
+      # readinessProbe, a cada 10 s, e em todo `kubectl exec` dos scripts. Mesmo cgroup, mesmo
+      # limite de memória e de CPU. Medido com o cache do WiredTiger cheio:
+      #
+      #   mongod quente ............ ~390 MB anon com limite de 512Mi, ~495 MB com folga
+      #   + 1 mongosh (a probe) .... > 512Mi  -> o kernel matou o MONGOD, sem comando manual nenhum
+      #
+      # E não sai sozinho: no restart o mongod reaplica o oplog, volta a ~390 MB, a probe sobe outro
+      # mongosh e o ciclo se repete (restarts de 8 para 12 em quatro minutos, reproduzido).
+      #
+      # Subir o limite NÃO resolve, só desloca o limiar — também reproduzido, com 768Mi. Quando a
+      # máquina fica lenta, a probe estoura o timeout, o kubelet desiste dela, mas o processo
+      # `mongosh` CONTINUA VIVO; a próxima probe sobe outro. Foram contados quatro acumulados. Cada
+      # um come memória e CPU do mesmo container, tudo fica mais lento, mais probes estouram — e o
+      # kernel mata o maior processo do cgroup, que é o banco.
+      #
+      # A causa é o cliente morar no mesmo cgroup do servidor. Este sidecar dá a ele um orçamento
+      # próprio: se um shell estourar a memória, morre um `mongosh` (ou o sidecar reinicia) — o
+      # mongod, e os quatro serviços que dependem dele, não sentem.
+      #
+      # A #41 só reproduzia OOM com QUATRO shells concorrentes porque mediu com o cache FRIO
+      # (mongod a ~100 MB). A variável que faltava era o tempo de uso, não a concorrência.
       containers:
         - name: mongodb
           image: mongo:7
           # args (não command): preserva o ENTRYPOINT docker-entrypoint.sh da imagem e só
           # substitui o CMD — invocação byte-equivalente ao docker-compose
           # (docker-entrypoint.sh mongod --replSet rs0 --bind_ip_all).
-          args: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
+          #
+          # --wiredTigerCacheSizeGB 0.25 FIXA o que antes era implícito. O padrão é
+          # max(50% de (RAM − 1 GB), 256 MB): com limite abaixo de 1,5 GiB a primeira parcela não
+          # passa do piso, e o cache já era 256 MB. Fixar torna o orçamento abaixo independente do
+          # limite — subir o `limits.memory` deixa de inflar o cache junto.
+          args: ["mongod", "--replSet", "rs0", "--bind_ip_all", "--wiredTigerCacheSizeGB", "0.25"]
           ports:
             - containerPort: 27017
           volumeMounts:
             - name: mongo-data
               mountPath: /data/db
+          # Só o mongod mora aqui agora. Com o cache de 256 MB cheio ele ficou entre ~330 e ~495 MB de
+          # memória ANÔNIMA nas medições — e o page cache dos arquivos de dados precisa de
+          # folga além disso, ou o WiredTiger passa a ler do disco a cada página. 512Mi não deixava
+          # folga nenhuma; 768Mi deixa. `requests` acompanha o consumo de regime (cache quente),
+          # não o de partida: com 256Mi o scheduler acreditava que o pod cabia num nó onde ele não
+          # cabe — o que no cluster gerenciado da Fase 4, com nós menores, vira despejo de pod.
           resources:
             requests:
               cpu: 100m
-              memory: 256Mi
+              memory: 512Mi
             limits:
               cpu: 500m
-              memory: 512Mi
+              memory: 768Mi
           # LIVENESS POR TCP, não por `exec mongosh` (issue #41).
           #
-          # O `mongosh` é um cliente Node: cada invocação sobe um runtime inteiro. Medido neste
-          # cluster, com o nó OCIOSO: mediana 525 ms, máximo 2999 ms — para um simples `ping`. Sob
-          # concorrência (que é o padrão dos scripts de teste deste repo, vários `kubectl exec
-          # mongosh` ao mesmo tempo) três invocações simultâneas levaram 3,8 s, 45,9 s e 73,2 s.
-          # Com `timeoutSeconds: 10`, o kubelet registrava
+          # Medido neste cluster, com o nó OCIOSO, um `mongosh` para um simples `ping`: mediana
+          # 525 ms, máximo 2999 ms. Três simultâneos levaram 3,8 s, 45,9 s e 73,2 s. Com
+          # `timeoutSeconds: 10`, o kubelet registrava
           #   `Liveness probe failed: command timed out ... timed out after 10s`
           #   `Killing  Container mongodb failed liveness probe, will be restarted`
           # e matava o container — 17 restarts acumulados, com `exitCode: 137` e `reason: Error`.
-          # É o par EVENTO + `reason` que identifica morte por probe: `reason: Error` significa sinal
-          # externo, e o evento diz qual. Não use "não há eventos de OOM" como prova do contrário —
-          # medido nesta base: um container pode terminar com `reason: OOMKilled` no status e o
-          # `kubectl get events` mostrar ZERO eventos de OOM (o kubelet grava no estado do container,
-          # e o evento nem sempre é emitido, além de expirar).
+          # É o par EVENTO + `reason` que identifica a causa: `reason: Error` é sinal externo (o
+          # evento diz qual), `reason: OOMKilled` é o kernel. Não use "não há eventos de OOM" como
+          # prova: um container pode terminar com `reason: OOMKilled` no status e o
+          # `kubectl get events` não mostrar evento nenhum. A fonte definitiva é o kernel:
+          #   minikube ssh -- "sudo dmesg -T | grep 'Killed process'"
           #
-          # ⚠️ Sobre memória, o que se sabe e o que não se sabe: os limites ficam como estão porque
-          # nenhum dos 17 restarts foi OOM. Mas forçando QUATRO `mongosh` concorrentes dentro do
-          # container (quatro runtimes Node a mais, contra `limits.memory: 512Mi`), o kernel matou o
-          # mongod com `reason: OOMKilled` — reproduzido. Isso é carga artificial, não operação
-          # normal: os scripts deste repo executam um `mongosh` por vez, em traps de limpeza. Fica
-          # registrado para quem for depurar um OOM aqui não procurar no lugar errado.
+          # O mesmo teste por TCP: 20 conexões, 0 falhas, mediana 2,0 ms, máximo 19,1 ms.
           #
-          # O mesmo teste por TCP: 20 conexões, 0 falhas, mediana 2,0 ms, máximo 19,1 ms. ~260x mais
-          # barato na mediana, e sem subir runtime nenhum.
-          #
-          # É o contrato certo para uma liveness: ela responde "o processo está vivo?". A pergunta
-          # semântica — "o replica set aceita escrita?" — é da readiness, abaixo, onde falhar apenas
-          # tira o Pod do Service em vez de MATAR o banco do qual todos os serviços dependem.
+          # É o contrato certo para uma liveness: "o processo está vivo?". A pergunta semântica —
+          # "o replica set aceita escrita?" — é da readiness, no sidecar, onde falhar apenas tira o
+          # Pod do Service em vez de MATAR o banco do qual todos os serviços dependem.
           livenessProbe:
             tcpSocket:
               port: 27017
@@ -81,27 +114,48 @@ spec:
             periodSeconds: 15
             timeoutSeconds: 5
             failureThreshold: 3
+
+        # SIDECAR: o cliente `mongosh`, em cgroup próprio. Não serve tráfego — dorme, e existe para
+        # (1) rodar a readinessProbe e (2) receber os `kubectl exec` (default-container acima). Fala
+        # com o mongod por 127.0.0.1:27017: containers do mesmo Pod dividem a rede.
+        - name: mongosh
+          image: mongo:7
+          command: ["sleep", "infinity"]
+          # Orçamento: até TRÊS `mongosh` simultâneos (~140–160 MB cada) — a probe, um shell de
+          # script e um interativo aberto — cabem em 512Mi. Medido: cinco rodadas de dois shells
+          # concorrentes com a probe passaram; quatro concorrentes estouraram o sidecar e o kernel
+          # matou dois `mongosh`, com o mongod intocado (oom_kill 0, restarts 0, Ready). O request é
+          # baixo porque o consumo é em rajada: a probe vive ~1 s a cada 10 s.
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
           # Inicia o replica set rs0 de forma idempotente e só reporta Ready quando o nó já é
           # PRIMARY gravável: se o RS não existe (rs.status() lança), dispara rs.initiate e falha
           # (quit 1) para tentar de novo; se existe, quit 0 apenas quando db.hello().isWritablePrimary.
-          # Assim o Pod não entra nos endpoints antes de aceitar writes/transações.
+          # Assim o Pod não entra nos endpoints antes de aceitar writes/transações. Pod Ready exige
+          # TODOS os containers prontos, então a probe aqui governa o Pod inteiro.
           #
-          # ⚠️ Esta probe CONTINUA sendo `exec mongosh`, e tem de continuar: é ela que faz o
-          # bootstrap do `rs0`. Trocá-la por TCP quebraria o replica set, que é pré-requisito do
-          # outbox transacional. O que muda é a TOLERÂNCIA.
+          # ⚠️ Esta probe tem de continuar sendo `mongosh`: é ela que faz o bootstrap do `rs0`,
+          # pré-requisito do outbox transacional. O que mudou na #71 foi ONDE ela roda.
           #
-          # `failureThreshold: 12` (era 6) segue a mesma filosofia do healthcheck do compose, que usa
-          # `retries: 10` justamente por conhecer a lentidão do mongosh. São ~2 min de indisponibilidade
-          # tolerada antes de o Pod sair dos endpoints — e sair dos endpoints é o que desencadeia a
-          # cascata: os serviços perdem o banco, as probes deles estouram, e tudo reinicia junto.
+          # `timeout -s KILL 7` mata o mongosh de verdade antes do timeout do kubelet (8 s). Sem
+          # isso, a probe que estoura o prazo é abandonada pelo kubelet mas o processo continua
+          # vivo, e as seguintes se ACUMULAM — foi o que levou ao OOM com 768Mi.
           #
-          # `timeoutSeconds: 8` fica ABAIXO de `periodSeconds: 10` de propósito. Timeout maior que o
-          # período faz as execuções se sobreporem, e cada uma sobe outro runtime Node — exatamente a
-          # contenção que esta issue trata. `periodSeconds` fica em 10 para não atrasar o bootstrap do
-          # rs0 num cluster novo (a primeira tentativa acontece em t+5s e as seguintes a cada 10s).
+          # `failureThreshold: 12`: ~2 min de indisponibilidade tolerada antes de o Pod sair dos
+          # endpoints, na mesma filosofia do `retries: 10` do compose. `periodSeconds: 10` para não
+          # atrasar o bootstrap do rs0 num cluster novo.
           readinessProbe:
             exec:
               command:
+                - timeout
+                - -s
+                - KILL
+                - "7"
                 - mongosh
                 - --quiet
                 - --eval
