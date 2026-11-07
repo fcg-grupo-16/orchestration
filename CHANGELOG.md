@@ -5,6 +5,23 @@ Todas as mudanças relevantes deste repositório de orquestração são document
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/)
 e o versionamento adere a [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [0.29.0] - 2026-11-07
+
+### Adicionado
+- **ADR 0009 — serviços de dados gerenciados vs in-cluster**
+  ([#66](https://github.com/fcg-grupo-16/orchestration/issues/66)), decidida peça por peça a partir do
+  que o código usa de fato, com cada afirmação ligada à documentação oficial da AWS:
+  - **RabbitMQ fica no cluster.** O Amazon MQ não oferece o plugin `rabbitmq_delayed_message_exchange`,
+    usado pelo `UseDelayedMessageScheduler` do `catalog-api` e do `payments-api`. De quebra, a nossa
+    política de DLX tem prioridade 0, a mesma da política padrão da AWS, e empataria.
+  - **Redis de idempotência fica no cluster.** O ElastiCache não suporta AOF desde o 2.8.22, o que
+    reabriria o e-mail duplicado da ADR 0006. O MemoryDB atende, e fica como evolução.
+  - **MongoDB fica no cluster.** O DocumentDB só serve a partir do 8.0.2, por causa do `$facet`, e
+    não cria coleção implicitamente dentro de transação, o que atinge o outbox do MassTransit. Esse
+    risco não dá para testar sem conta.
+  - **Redis de cache migra para ElastiCache, se couber na cota.** É a única peça sem impedimento
+    técnico, sem mudança de código e com rollback trivial. Pendente só o número de custo.
+
 ## [0.28.0] - 2026-11-07
 
 ### Corrigido
