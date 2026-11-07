@@ -87,6 +87,7 @@ flowchart TB
 | [0006](docs/adr/0006-redis-dedicado-para-idempotencia.md) | Redis dedicado e durável para o store de idempotência |
 | [0007](docs/adr/0007-consulta-de-contato-servico-a-servico.md) | Consulta de contato serviço-a-serviço, com chave de assinatura própria |
 | [0008](docs/adr/0008-provedor-de-nuvem-aws.md) | **Fase 4:** AWS como provedor de nuvem |
+| [0009](docs/adr/0009-servicos-de-dados-gerenciados-vs-in-cluster.md) | **Fase 4:** Mongo, RabbitMQ e Redis de idempotência ficam no cluster; o Redis de cache migra para ElastiCache se couber na cota |
 
 ## Microsserviços
 
