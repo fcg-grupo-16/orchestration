@@ -2,6 +2,12 @@
 
 **Status:** aceito · **Data:** 2026-11-05 · **Issue:** [#61](https://github.com/fcg-grupo-16/orchestration/issues/61)
 
+> **Atualização (2026-11-13):** a conta chegou e é um AWS Academy Learner Lab. A verificação de cota
+> abaixo foi respondida na [ADR 0010](0010-ambiente-aws-academy-e-busca-no-cluster.md), que também
+> muda duas decisões desta: o **OpenSearch roda no cluster** (o serviço gerenciado é bloqueado no
+> laboratório, e o professor aceitou a alternativa) e o **CI usa credenciais de sessão**, porque o
+> laboratório não permite criar o provedor OIDC. O provedor continua AWS.
+
 ## Contexto
 
 A Fase 4 pede que a plataforma saia do cluster local e passe a rodar em **Kubernetes gerenciado**, com
@@ -114,7 +120,7 @@ seguinte, que manda escolher **um** provedor.
   demonstração. Manter os dois significa manter dois caminhos de deploy em sincronia — custo que
   aceitamos para não depender de nuvem para desenvolver.
 
-### ⚠️ Verificação de cota — pendente, e bloqueia o provisionamento
+### Verificação de cota — respondida na [ADR 0010](0010-ambiente-aws-academy-e-busca-no-cluster.md)
 
 Esta ADR decide o **provedor**. O que ela **não** pode decidir sem acesso à conta é o
 dimensionamento, e isso bloqueia as issues de provisionamento. Perguntas a responder com o professor,
