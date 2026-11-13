@@ -1042,6 +1042,7 @@ Todos em `scripts/`, todos idempotentes e seguros para rodar mais de uma vez.
 |---|---|---|
 | `deploy-minikube.sh` | build + carga das imagens (tag por commit), instala Kong e KEDA, aplica os manifestos | subir a plataforma no cluster |
 | `undeploy-minikube.sh` | remove a plataforma, os controllers e os CRDs | limpar o cluster |
+| `verify-fase4.sh` | **checklist da Fase 4**: nós gerenciados, digest do pod = digest do ECR, ExternalSecrets, paridades de chave, OpenSearch isolado, fuzzy e índice fiel ao banco, impacto do cache em ms, KEDA | antes de gravar o vídeo da Fase 4 (`ALVO=minikube` para rodar local) |
 | `verify-fase3.sh` | **checklist da entrega**: 24 checagens dos 5 requisitos, consultando o cluster | antes de gravar o vídeo |
 | `smoke-test.sh` | 9 casos de ponta a ponta (11 asserções), em `MODO=compose` ou `MODO=gateway` | validar os fluxos |
 | `gateway-test.sh` | matriz de aceite do Kong: 17 asserções — 15 na matriz e 2 de isolamento de rate limit, medidas com **dois pods em IPs distintos** | validar o gateway |
@@ -1062,6 +1063,20 @@ minikube delete && minikube start
 ./scripts/deploy-minikube.sh
 ./scripts/verify-fase3.sh          # deve terminar em "PRONTO PARA GRAVAR"
 ```
+
+**Contra o EKS (Fase 4, [#69](https://github.com/fcg-grupo-16/orchestration/issues/69)).** Os testes
+aceitam o endereço público em `GATEWAY_URL`, sem port-forward e sem o header `Host:` forçado:
+
+```bash
+export GATEWAY_URL="http://$(kubectl -n kong get svc kong-kong-proxy -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')"
+./scripts/verify-fase4.sh                       # deve terminar em "PRONTO PARA GRAVAR"
+./scripts/gateway-test.sh                       # inclusive 10a/10b: o NLB preserva o IP de origem
+MODO=gateway MANTER_DADOS=1 ./scripts/smoke-test.sh
+./scripts/keda-test.sh                          # remeça os tempos 0→1→0 no cluster gerenciado
+```
+
+`MANTER_DADOS=1` mantém o usuário e a avaliação que o smoke cria: a confirmação de compra chega à
+Function **depois** do fim do teste, e apagar o usuário antes disso faz a notificação parecer falha.
 
 > `verify-fase3.sh` e `smoke-test.sh` **não se substituem**: o primeiro confere que os componentes
 > estão lá e servindo o binário certo; o segundo exercita os fluxos de verdade. Um cluster pode

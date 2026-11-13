@@ -25,8 +25,14 @@ set -euo pipefail
 NS=fcg
 DEPLOY=notifications-function
 GW_PORT="${GW_PORT:-8020}"
-GW="http://localhost:${GW_PORT}"
-HOSTH="Host: api.fcg.local"
+# Fase 4 (#69): GATEWAY_URL = endereço público do Load Balancer (EKS), sem port-forward.
+if [ -n "${GATEWAY_URL:-}" ]; then
+  GW="${GATEWAY_URL%/}"
+  HOSTH="Host: $(printf '%s' "$GW" | sed -E 's#^https?://##; s#[:/].*$##')"
+else
+  GW="http://localhost:${GW_PORT}"
+  HOSTH="Host: api.fcg.local"
+fi
 FALHAS=0
 
 for bin in kubectl curl jq; do
@@ -129,8 +135,10 @@ check "6. ScaledObject Active=False (fila vazia)" "False" "${ATIVO:-ausente}"
 # foi medido como FALSO POSITIVO — o log do operador não registrava terceiro ciclo de escala, não
 # havia SuccessfulCreate novo, e o ReplicaSet seguia sem pod.
 echo "==> DISPARO: evento real pelo gateway"
-kubectl -n kong port-forward svc/kong-kong-proxy "${GW_PORT}:80" >"$TMPD/pf.log" 2>&1 &
-PF=$!
+if [ -z "${GATEWAY_URL:-}" ]; then
+  kubectl -n kong port-forward svc/kong-kong-proxy "${GW_PORT}:80" >"$TMPD/pf.log" 2>&1 &
+  PF=$!
+fi
 for _ in $(seq 1 30); do curl -s -o /dev/null "$GW" && break; sleep 1; done
 # Capturado AQUI, e não antes da espera do port-forward (que leva até 30s): quanto menor a janela
 # entre a captura e o disparo, menor a chance de um pod nascido no meio ser contado como "novo".

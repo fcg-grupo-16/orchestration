@@ -36,8 +36,14 @@ case "$MODO" in
     ;;
   gateway)
     GW="${GATEWAY_URL:-http://localhost:8000}"
+    GW="${GW%/}"
     USERS_BASE="$GW"; CATALOG_BASE="$GW"
-    HOSTH="api.fcg.local"
+    # Fase 4 (#69): no endereço público do EKS as rotas aceitam o host do Load Balancer (o
+    # deploy-eks.sh troca api.fcg.local por ele). Em localhost (port-forward), segue api.fcg.local.
+    case "$GW" in
+      http://localhost*|http://127.0.0.1*) HOSTH="api.fcg.local" ;;
+      *) HOSTH="$(printf '%s' "$GW" | sed -E 's#^https?://##; s#[:/].*$##')" ;;
+    esac
     CATALOG_HOST=""   # no cluster o /metrics não passa pelo gateway; usa port-forward (caso 9)
     for bin in curl jq kubectl; do
       command -v "$bin" >/dev/null 2>&1 || { echo "ERRO: '$bin' não encontrado." >&2; exit 1; }
@@ -68,6 +74,13 @@ mongo_eval() {
 # e 34 refresh_tokens acumulados). Não-fatal: limpeza falha não invalida o resultado do teste.
 limpar() {
   rm -rf "$TMPD"
+  # MANTER_DADOS=1 (Fase 4, #69): a confirmação de compra chega à notifications-function DEPOIS do
+  # fim do teste, e apagar o usuário antes disso faz o histórico da notificação parecer falha. Para
+  # conferir a notificação no notificationsdb, rode com MANTER_DADOS=1 e limpe depois.
+  if [ "${MANTER_DADOS:-0}" = "1" ]; then
+    echo "  (MANTER_DADOS=1: usuário $EMAIL e avaliação mantidos para conferência)"
+    return 0
+  fi
   mongo_eval usersdb "var u=db.usuarios.findOne({Email:'$EMAIL'},{_id:1});
      if (u) { db.refresh_tokens.deleteMany({UsuarioId:u._id}); db.usuarios.deleteOne({_id:u._id}); }" \
     >/dev/null 2>&1 || echo "  AVISO: não consegui limpar o resíduo de $EMAIL" >&2
