@@ -88,6 +88,10 @@ REDIS_CONN="${REDIS_CONN:-redis:6379}"
 # caminho para e-mail duplicado, e nada no deploy acusaria.
 REDIS_IDEMPOTENCIA_CONN="${REDIS_IDEMPOTENCIA_CONN:-redis-idempotencia:6379}"
 
+# Senha do admin do Grafana. Estava LITERAL no Deployment (k8s/41-observability-grafana.yaml), achada
+# pelo verify-fase4.sh (#69): segredo em claro no spec do pod, mesmo que de demonstração.
+GRAFANA_ADMIN_PASSWORD="${GRAFANA_ADMIN_PASSWORD:-admin}"
+
 segredos_da_plataforma() {
   local registrar="$1"
   "$registrar" rabbitmq-secret          ""                  "RABBITMQ_DEFAULT_USER=$RABBIT_USER" "RABBITMQ_DEFAULT_PASS=$RABBIT_PASS"
@@ -103,4 +107,5 @@ segredos_da_plataforma() {
   # Selada como as demais: a issue #29 propunha um Secret em TEXTO CLARO versionado, o que seria a
   # única credencial em claro do repositório.
   "$registrar" keda-rabbitmq-secret "notifications-function" "host=$RABBIT_CONNECTION_FQDN"
+  "$registrar" grafana-secret "grafana" "GF_SECURITY_ADMIN_PASSWORD=$GRAFANA_ADMIN_PASSWORD"
 }

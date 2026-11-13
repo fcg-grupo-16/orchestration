@@ -14,6 +14,7 @@ locals {
     "notifications-function-secret",
     "keda-rabbitmq-secret",
     "fcg-jwt-credential",
+    "grafana-secret",
   ]
 }
 

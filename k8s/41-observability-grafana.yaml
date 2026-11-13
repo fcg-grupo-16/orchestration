@@ -95,8 +95,13 @@ spec:
           env:
             - name: GF_SECURITY_ADMIN_USER
               value: admin
+            # Do Secret grafana-secret: SealedSecret no minikube, External Secrets no EKS (ADR 0011).
+            # Era `value: admin` literal no spec, o que o verify-fase4.sh acusa como segredo em claro.
             - name: GF_SECURITY_ADMIN_PASSWORD
-              value: admin
+              valueFrom:
+                secretKeyRef:
+                  name: grafana-secret
+                  key: GF_SECURITY_ADMIN_PASSWORD
             # Sem telemetria e sem banner de "novidades" atrapalhando a gravação do vídeo.
             - name: GF_ANALYTICS_REPORTING_ENABLED
               value: "false"

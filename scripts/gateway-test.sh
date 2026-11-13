@@ -10,8 +10,19 @@
 set -euo pipefail
 
 GW_PORT="${GW_PORT:-8000}"
-GW="http://localhost:${GW_PORT}"
-HOSTH="Host: api.fcg.local"
+# Fase 4 (#69): com GATEWAY_URL, bate no endereço PÚBLICO do Load Balancer (EKS), sem port-forward.
+# As rotas do Kong aceitam o host do próprio LB (o deploy-eks.sh troca api.fcg.local por ele), então
+# o header Host passa a ser o host da URL.
+#   GATEWAY_URL="http://$(kubectl -n kong get svc kong-kong-proxy -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')" \
+#     ./scripts/gateway-test.sh
+if [ -n "${GATEWAY_URL:-}" ]; then
+  GW="${GATEWAY_URL%/}"
+  HOST_ROTAS="$(printf '%s' "$GW" | sed -E 's#^https?://##; s#[:/].*$##')"
+else
+  GW="http://localhost:${GW_PORT}"
+  HOST_ROTAS="api.fcg.local"
+fi
+HOSTH="Host: $HOST_ROTAS"
 FALHAS=0
 
 for bin in kubectl curl jq; do
@@ -93,9 +104,13 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "==> Abrindo o proxy do Kong em :${GW_PORT}"
-kubectl -n kong port-forward "svc/kong-kong-proxy" "${GW_PORT}:80" >"$TMPD/pf.log" 2>&1 &
-PF=$!
+if [ -n "${GATEWAY_URL:-}" ]; then
+  echo "==> Endereço público: $GW (Host: $HOST_ROTAS)"
+else
+  echo "==> Abrindo o proxy do Kong em :${GW_PORT}"
+  kubectl -n kong port-forward "svc/kong-kong-proxy" "${GW_PORT}:80" >"$TMPD/pf.log" 2>&1 &
+  PF=$!
+fi
 for _ in $(seq 1 30); do curl -s -o /dev/null "$GW" && break; sleep 1; done
 
 check() { # nome, esperado, obtido
@@ -218,10 +233,10 @@ for P in "$POD_A" "$POD_B"; do
 done
 
 req() { kubectl -n fcg exec "$1" -- sh -c \
-  "curl -s -o /dev/null -w '%{http_code}' -H 'Host: api.fcg.local' -H \"Authorization: Bearer \$(cat /tmp/tk)\" $URL_INT" 2>/dev/null | tr -d '[:space:]' || true; }
+  "curl -s -o /dev/null -w '%{http_code}' -H 'Host: $HOST_ROTAS' -H \"Authorization: Bearer \$(cat /tmp/tk)\" $URL_INT" 2>/dev/null | tr -d '[:space:]' || true; }
 
 A_COUNTS=$(kubectl -n fcg exec "$POD_A" -- sh -c \
-  "for i in \$(seq 1 140); do curl -s -o /dev/null -w '%{http_code}\n' -H 'Host: api.fcg.local' -H \"Authorization: Bearer \$(cat /tmp/tk)\" $URL_INT; done | sort | uniq -c" 2>/dev/null || true)
+  "for i in \$(seq 1 140); do curl -s -o /dev/null -w '%{http_code}\n' -H 'Host: $HOST_ROTAS' -H \"Authorization: Bearer \$(cat /tmp/tk)\" $URL_INT; done | sort | uniq -c" 2>/dev/null || true)
 echo "$A_COUNTS" | sed 's/^/     pod A: /'
 
 A_OK=$(echo "$A_COUNTS" | awk '$2==200{print $1}'); A_OK=${A_OK:-0}

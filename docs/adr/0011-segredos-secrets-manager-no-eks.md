@@ -86,7 +86,7 @@ vêm da mesma variável.
 
 🔶 Teste na conta, quando o AWS Academy voltar:
 
-- o `SecretSynced` dos sete ExternalSecrets;
+- o `SecretSynced` dos oito ExternalSecrets;
 - a comparação dos valores decodificados com os do minikube (passo 3 da #65);
 - `gateway-test.sh` (paridade do JWT) e o fluxo de compra (chave de serviço).
 
