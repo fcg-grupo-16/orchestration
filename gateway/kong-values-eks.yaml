@@ -1,0 +1,23 @@
+# Overlay do Kong para o EKS (#64). Aplicado DEPOIS do kong-values.yaml:
+#   helm upgrade --install kong kong/kong -f gateway/kong-values.yaml -f gateway/kong-values-eks.yaml
+# Só muda a exposição; rotas, plugins e credenciais seguem nos CRDs de k8s/gateway/.
+#
+# Por que NLB e não ALB (decisão da #64): o rate limit da plataforma é POR IP, e as asserções 10a e
+# 10b do gateway-test.sh provam o isolamento entre clientes. Um balanceador de camada 7 entregaria o IP
+# do cliente só no X-Forwarded-For, e o Kong veria todo mundo como o mesmo IP. O NLB é camada 4: não
+# mexe no pacote.
+#
+# Por que sem o AWS Load Balancer Controller: ele precisa de uma role IAM própria (IRSA), e o AWS
+# Academy não permite criar role (ADR 0010). O provisionamento "in-tree" do próprio EKS atende a um
+# Service `type: LoadBalancer` com a anotação abaixo, e cria um NLB com alvos do tipo instância.
+proxy:
+  type: LoadBalancer
+  annotations:
+    # Sem esta anotação, o provisionamento in-tree cria um Classic Load Balancer (legado).
+    service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+  # `Local`: o nó só entrega o tráfego ao pod do Kong que roda NELE, sem um segundo salto com SNAT.
+  # É o que preserva o IP de origem até o Kong, com alvos do tipo instância. Com `Cluster` (o padrão),
+  # o kube-proxy reescreveria o IP de origem para o do nó, e o rate limit por IP deixaria de separar
+  # os clientes. O NLB checa a saúde de cada nó pela healthCheckNodePort que o Kubernetes cria, e só
+  # manda tráfego para os nós que têm pod do Kong.
+  externalTrafficPolicy: Local

@@ -287,16 +287,32 @@ Learner Lab**, e os limites dele moldam o código: ver a
 [ADR 0010](docs/adr/0010-ambiente-aws-academy-e-busca-no-cluster.md).
 
 ```bash
-export AWS_PROFILE=academy           # credencial de sessão do lab, válida por ~4 h
-./scripts/terraform-init.sh          # bucket de estado + terraform init
-terraform -chdir=terraform plan
-terraform -chdir=terraform apply
-aws eks update-kubeconfig --name fcg --region us-east-1
-kubectl config current-context       # tem de apontar para o EKS, NÃO para o minikube
-kubectl get nodes
+export AWS_PROFILE=academy               # credencial de sessão do lab, válida por ~4 h
+./scripts/terraform-init.sh              # bucket de estado + terraform init
+terraform -chdir=terraform apply         # VPC, EKS, ECR, segredos (vazios), KEDA, External Secrets
+./scripts/publicar-segredos-aws.sh       # valores dos segredos no Secrets Manager (ADR 0011)
+./scripts/atualizar-credenciais-ci.sh    # credenciais da sessão no GitHub + liga o deploy pelo CI
+./scripts/deploy-eks.sh                  # Kong com NLB, segredos, plataforma; imprime o endereço público
 
-./scripts/terraform-destroy.sh       # AO FIM DO DIA — não é opcional
+./scripts/terraform-destroy.sh           # AO FIM DO DIA — não é opcional
+DESLIGAR=1 ./scripts/atualizar-credenciais-ci.sh   # o CI para de tentar publicar
 ```
+
+**Entrega contínua ([#68](https://github.com/fcg-grupo-16/orchestration/issues/68)).** Depois do
+primeiro `deploy-eks.sh`, cada push na `main` de um serviço publica a imagem no ECR com a tag do SHA e
+chama o workflow reutilizável [`deploy-servico.yml`](.github/workflows/deploy-servico.yml), que faz o
+rolling update e verifica o `/health/ready`. Isso só acontece com a variável da organização
+`AWS_DEPLOY_HABILITADO=true`. Fora da sessão do lab ela fica `false`, e o CI segue construindo e
+testando, sem falhar por falta de credencial.
+
+> ⚠️ **As credenciais do CI expiram com a sessão do lab (~4 h).** Não há OIDC no AWS Academy
+> (ADR 0010). A cada sessão, rode `./scripts/atualizar-credenciais-ci.sh` de novo, ou o push e o
+> deploy falham na autenticação.
+
+**Endereço público ([#64](https://github.com/fcg-grupo-16/orchestration/issues/64)).** O Kong ganha um
+**Network Load Balancer** (`gateway/kong-values-eks.yaml`), com `externalTrafficPolicy: Local` para o IP
+do cliente chegar ao Kong: o rate limit é por IP. Sem domínio próprio, as rotas aceitam o DNS do Load
+Balancer no lugar de `api.fcg.local`, e não é preciso forçar o header `Host:`.
 
 > ⚠️ **Três regras do laboratório que o código respeita, e que você também precisa respeitar:**
 >
@@ -1034,6 +1050,8 @@ Todos em `scripts/`, todos idempotentes e seguros para rodar mais de uma vez.
 | `gen-dashboard-configmap.sh` | regenera o ConfigMap do dashboard a partir do JSON | ao editar o dashboard |
 | `terraform-init.sh` | cria o bucket de estado no S3 (se faltar) e roda `terraform init` em `terraform/` | uma vez por clone, e após reiniciar o lab |
 | `publicar-segredos-aws.sh` | grava no Secrets Manager os valores dos Secrets, da mesma fonte do `seal-secrets.sh` | depois do `terraform apply`, e para rotacionar |
+| `deploy-eks.sh` | sobe a plataforma no EKS com as imagens da `main` no ECR, segredos do Secrets Manager e o Kong com NLB | depois do `terraform apply` |
+| `atualizar-credenciais-ci.sh` | copia as credenciais da sessão do lab para os secrets da organização e liga o deploy pelo CI | **a cada sessão** do lab |
 | `terraform-destroy.sh` | remove Load Balancers e volumes criados pelo Kubernetes, **depois** roda `terraform destroy` | **ao fim de cada dia de uso** da AWS |
 
 A sequência completa, num cluster do zero:
