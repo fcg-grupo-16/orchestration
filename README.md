@@ -200,7 +200,7 @@ Sobe RabbitMQ, MongoDB, Redis, OpenSearch, a stack de observabilidade e os **3 m
 | RabbitMQ Management | <http://localhost:15672> | `kubectl -n fcg port-forward svc/rabbitmq 15672:15672` | guest / guest |
 | MongoDB | `mongodb://localhost:27017/?replicaSet=rs0` | `kubectl -n fcg port-forward svc/mongodb 27017:27017` | — |
 | Redis | `localhost:6379` | `kubectl -n fcg port-forward svc/redis 6379:6379` | — |
-| **OpenSearch** (Fase 4) | <http://localhost:9200> | — (no cluster será um StatefulSet, [#67](https://github.com/fcg-grupo-16/orchestration/issues/67), [ADR 0010](docs/adr/0010-ambiente-aws-academy-e-busca-no-cluster.md)) | — (segurança desligada, só loopback) |
+| **OpenSearch** (Fase 4) | <http://localhost:9200> | `kubectl -n fcg port-forward svc/opensearch 9200:9200` (StatefulSet, [#67](https://github.com/fcg-grupo-16/orchestration/issues/67), [ADR 0010](docs/adr/0010-ambiente-aws-academy-e-busca-no-cluster.md)) | — (segurança desligada, só loopback) |
 
 > **OpenSearch é ambiente de desenvolvimento** (Fase 4, [#74](https://github.com/fcg-grupo-16/orchestration/issues/74)):
 > nó único e plugin de segurança desligado, por isso publicado só no loopback. Serve para desenvolver
@@ -214,6 +214,14 @@ Sobe RabbitMQ, MongoDB, Redis, OpenSearch, a stack de observabilidade e os **3 m
 >   `"number_of_replicas": 0`.
 > - **Não há volume.** O índice é derivado do MongoDB, e `docker compose down` o apaga. É reconstruível
 >   — não existe dado que só esteja no OpenSearch.
+>
+> - **Índice vazio depois de subir?** O índice é derivado do Mongo. Reconstrua com
+>   `POST /api/v1/jogos/reindex` (token de administrador): ele indexa os jogos ativos e só depois tira
+>   do índice o que saiu do catálogo, sem deixar a busca vazia no meio.
+>
+> No cluster, o OpenSearch é um StatefulSet com volume, isolado por uma NetworkPolicy que só aceita o
+> `catalog-api` (`k8s/13-infra-opensearch.yaml`). ⚠️ No minikube padrão a NetworkPolicy é **aceita e
+> ignorada**; ela só é imposta no EKS, onde o `vpc-cni` sobe com `enableNetworkPolicy`.
 >
 > ```bash
 > docker compose up -d opensearch
@@ -929,8 +937,9 @@ kubectl -n fcg exec statefulset/redis-idempotencia -- redis-cli config get maxme
   connection strings — em produção ela carregaria credencial.
 - **Busca (Fase 4):** `OpenSearch__Endpoint` e `OpenSearch__IndiceJogos` no `catalog-api`. Endpoint
   **ausente** desliga a busca — mesma convenção do `OTEL_EXPORTER_OTLP_ENDPOINT`, que mantém
-  `dotnet run` funcionando sem o serviço no ar. Por isso o ConfigMap do cluster ainda **não** tem as
-  duas chaves: elas entram quando o OpenSearch do cluster existir ([#67](https://github.com/fcg-grupo-16/orchestration/issues/67)).
+  `dotnet run` funcionando sem o serviço no ar; sem ele, `/search` responde `503`. No cluster as duas
+  chaves ficam no **ConfigMap**, e não no Secret: o endpoint é interno (`http://opensearch:9200`) e não
+  carrega credencial. O isolamento é a NetworkPolicy de `k8s/13-infra-opensearch.yaml` ([#67](https://github.com/fcg-grupo-16/orchestration/issues/67)).
 - A **chave JWT** (`JwtSettings__SecretKey`) **deve ser idêntica** em `users-api` (emite)
   e `catalog-api` (valida).
 - **Databases (database-per-service):** `usersdb` (users-api), `catalogdb` (catalog-api) e

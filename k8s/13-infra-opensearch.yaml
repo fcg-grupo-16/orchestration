@@ -1,0 +1,154 @@
+# OpenSearch — motor da busca avançada do catalog-api (Fase 4, #67).
+#
+# Roda DENTRO do cluster, e não como serviço gerenciado, porque o Amazon OpenSearch Service é
+# bloqueado no AWS Academy Learner Lab; o professor aceitou a alternativa (ADR 0010). A API é a
+# mesma do gerenciado: migrar depois é trocar o OpenSearch__Endpoint no ConfigMap do catalog-api.
+#
+# Tudo aqui vem do serviço `opensearch` do docker-compose.yml, onde foi MEDIDO (#74): mesma imagem,
+# nó único, heap fixo e o mesmo teto de memória. A diferença é o volume — ver volumeClaimTemplates.
+#
+# ⚠️ Plugin de segurança DESLIGADO: qualquer pod que alcance a 9200 lê e APAGA índices
+# (`DELETE /_all`). O isolamento é a NetworkPolicy no fim deste arquivo, que só aceita o
+# catalog-api. No compose o equivalente é publicar só no loopback.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: opensearch
+  namespace: fcg
+  labels:
+    app: opensearch
+    app.kubernetes.io/part-of: fiap-cloud-games
+spec:
+  serviceName: opensearch
+  replicas: 1
+  selector:
+    matchLabels:
+      app: opensearch
+  template:
+    metadata:
+      labels:
+        app: opensearch
+    spec:
+      securityContext:
+        # A imagem roda como uid 1000. Sem o fsGroup, o volume EBS (ou o hostPath do minikube) monta
+        # com dono root e o OpenSearch morre no start com AccessDeniedException em /data.
+        fsGroup: 1000
+      containers:
+        - name: opensearch
+          image: opensearchproject/opensearch:2.19.0   # tag PINADA, a mesma do compose
+          imagePullPolicy: IfNotPresent
+          env:
+            # Sem isto o OpenSearch tenta formar cluster, não acha outros nós e NÃO SOBE. Também é o
+            # que dispensa as bootstrap checks de produção (vm.max_map_count) num nó único.
+            - name: discovery.type
+              value: single-node
+            - name: DISABLE_SECURITY_PLUGIN
+              value: "true"
+            # Heap FIXO. Sem teto, a JVM reserva uma fração da memória do NÓ, não do container, e
+            # disputa memória com o resto da plataforma.
+            - name: OPENSEARCH_JAVA_OPTS
+              value: "-Xms512m -Xmx512m"
+          ports:
+            - name: http
+              containerPort: 9200
+          volumeMounts:
+            - name: dados
+              mountPath: /usr/share/opensearch/data
+          resources:
+            requests:
+              cpu: 100m
+              # Medido no compose (#74): ~925 MiB em repouso e ~970 MiB com 20 mil documentos e
+              # consulta fuzzy. O request reflete o uso real, para o scheduler não superlotar o nó.
+              memory: 1Gi
+            limits:
+              cpu: "1"
+              # Teto acima do heap: a JVM usa memória fora dele (metaspace, buffers diretos,
+              # threads). O mesmo mem_limit do compose.
+              memory: 1536Mi
+          # Probes por EXEC, não por httpGet: a probe roda dentro do container e não depende de a
+          # NetworkPolicy abaixo liberar o tráfego do kubelet, o que varia por CNI.
+          #
+          # `wait_for_status=yellow`: num nó único, índice com réplica fica yellow para sempre. O
+          # catalog-api cria o `jogos` com number_of_replicas 0 (green), mas qualquer índice criado à
+          # mão com a réplica padrão deixaria a probe reprovando para sempre se ela exigisse green.
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - curl -fsS 'http://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=2s' > /dev/null
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            # Explícitos, nunca os defaults — ver issue #38.
+            timeoutSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - curl -fsS http://localhost:9200 > /dev/null
+            # A JVM do OpenSearch leva ~30-60 s para responder na primeira subida. Liveness cedo
+            # demais mata o pod em loop antes de ele terminar de iniciar.
+            initialDelaySeconds: 90
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+  volumeClaimTemplates:
+    # Com volume, ao contrário do compose: o índice é reconstruível a partir do Mongo
+    # (POST /api/v1/jogos/reindex), mas sem volume cada reinício do pod deixaria a busca vazia até
+    # alguém reindexar. O PVC de volumeClaimTemplate é RETIDO quando o StatefulSet é removido.
+    - metadata:
+        name: dados          # vira o PVC dados-opensearch-0
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: standard   # minikube: a padrão; EKS: a gp3 criada pelo terraform/cluster.tf
+        resources:
+          requests:
+            storage: 2Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: opensearch
+  namespace: fcg
+  labels:
+    app: opensearch
+    app.kubernetes.io/part-of: fiap-cloud-games
+spec:
+  # ClusterIP e NUNCA exposto pelo Kong nem por LoadBalancer: com a segurança desligada, quem
+  # alcança a porta administra o índice.
+  type: ClusterIP
+  selector:
+    app: opensearch
+  ports:
+    - name: http
+      port: 9200
+      targetPort: 9200
+---
+# Só o catalog-api fala com o OpenSearch.
+#
+# ⚠️ NetworkPolicy só vale se o CNI a IMPÕE. No EKS, o terraform/eks.tf liga `enableNetworkPolicy`
+# no add-on vpc-cni. No minikube padrão (kindnet) ela é ACEITA E IGNORADA em silêncio: o teste de
+# bloqueio só vale no EKS, ou num minikube com `--cni=calico`.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: opensearch-so-catalog
+  namespace: fcg
+  labels:
+    app: opensearch
+    app.kubernetes.io/part-of: fiap-cloud-games
+spec:
+  podSelector:
+    matchLabels:
+      app: opensearch
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: catalog-api
+      ports:
+        - protocol: TCP
+          port: 9200
