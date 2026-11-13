@@ -94,7 +94,7 @@ jobs:
             -schema-location default \
             -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
             -ignore-missing-schemas \
-            k8s/
+            k8s/ k8s-aws/
 
       # 3) Sintaxe dos scripts de shell. A #26 acrescentou `helm upgrade` ao
       #    deploy-minikube.sh, reescreveu o undeploy-minikube.sh e criou o gateway-test.sh —
@@ -103,7 +103,7 @@ jobs:
       #    `bash -n` só faz parse (não executa nada), então é seguro no runner.
       - name: Validar sintaxe dos scripts
         run: |
-          for f in scripts/*.sh; do
+          for f in scripts/*.sh scripts/lib/*.sh; do
             echo "  bash -n $f"
             bash -n "$f"
           done
@@ -114,7 +114,7 @@ jobs:
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
           shellcheck --version
-          shellcheck -S warning scripts/*.sh
+          shellcheck -x -S warning scripts/*.sh scripts/lib/*.sh
 
       # 5) Topologia do RabbitMQ. JSON quebrado ou binding faltando só apareceria no BOOT do broker,
       #    e o modo de falha é MUDO: o evento cai num exchange sem binding e some sem erro.
@@ -147,7 +147,7 @@ jobs:
       - name: yamllint
         run: |
           pipx install yamllint || pip install yamllint
-          yamllint -c .yamllint k8s/ gateway/ docker/ docker-compose.yml .github/
+          yamllint -c .yamllint k8s/ k8s-aws/ gateway/ docker/ docker-compose.yml .github/
 
       # 8) Terraform da Fase 4 (#62). `-backend=false`: valida a configuração sem tocar no estado
       #    nem precisar de credencial da AWS. O `plan` exige a sessão do laboratório e roda fora do

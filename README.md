@@ -89,6 +89,7 @@ flowchart TB
 | [0008](docs/adr/0008-provedor-de-nuvem-aws.md) | **Fase 4:** AWS como provedor de nuvem |
 | [0009](docs/adr/0009-servicos-de-dados-gerenciados-vs-in-cluster.md) | **Fase 4:** Mongo, RabbitMQ e Redis de idempotência ficam no cluster; o Redis de cache migra para ElastiCache se couber na cota |
 | [0010](docs/adr/0010-ambiente-aws-academy-e-busca-no-cluster.md) | **Fase 4:** AWS Academy Learner Lab; OpenSearch no cluster, CI com credenciais de sessão, roles do laboratório |
+| [0011](docs/adr/0011-segredos-secrets-manager-no-eks.md) | **Fase 4:** segredos no AWS Secrets Manager + External Secrets no EKS; Sealed Secrets segue no minikube; uma fonte de valores para os dois |
 
 ## Microsserviços
 
@@ -457,7 +458,8 @@ do cluster.
 | Arquivo | Papel |
 | --- | --- |
 | [`gateway/kong-values.yaml`](gateway/kong-values.yaml) | values do chart (DB-less, `ingressClass: kong`, proxy NodePort 30080, admin/manager/portal fechados) |
-| [`k8s/gateway/40-kong-consumer.yaml`](k8s/gateway/40-kong-consumer.yaml) | `KongConsumer` + credencial JWT |
+| [`k8s/gateway/39-kong-jwt-credential.yaml`](k8s/gateway/39-kong-jwt-credential.yaml) | credencial JWT do Kong (**só minikube**; no EKS vem do Secrets Manager, ADR 0011) |
+| [`k8s/gateway/40-kong-consumer.yaml`](k8s/gateway/40-kong-consumer.yaml) | `KongConsumer` |
 | [`k8s/gateway/41-kong-plugins.yaml`](k8s/gateway/41-kong-plugins.yaml) | plugins `jwt`, `rate-limiting` (120/min protegido e 20/min público — ver a limitação abaixo), `correlation-id` |
 | [`k8s/gateway/42-kong-ingress.yaml`](k8s/gateway/42-kong-ingress.yaml) | as três rotas (pública, cadastro, protegida) |
 
@@ -987,6 +989,28 @@ O `scripts/seal-secrets.sh` garante que `JwtSettings__SecretKey` seja **idêntic
 > controller ganha outra chave e os `SealedSecret`s antigos **não decifram mais** — reinstale o
 > controller e rode `./scripts/seal-secrets.sh` de novo. Em produção, faça backup da chave do controller.
 
+### Segredos na AWS (Fase 4) — Secrets Manager + External Secrets
+
+No EKS os Secrets vêm do **AWS Secrets Manager**, materializados pelo **External Secrets Operator** com
+os **mesmos nomes** que os Deployments já usam: nenhum manifesto de serviço muda
+([ADR 0011](docs/adr/0011-segredos-secrets-manager-no-eks.md), [#65](https://github.com/fcg-grupo-16/orchestration/issues/65)).
+
+```bash
+export AWS_PROFILE=academy
+terraform -chdir=terraform apply          # cria os segredos (vazios) e instala o operador
+./scripts/publicar-segredos-aws.sh        # grava os valores
+kubectl -n fcg get externalsecret         # STATUS SecretSynced, READY True
+```
+
+- **Uma fonte de valores para os dois ambientes:** `scripts/lib/segredos-plataforma.sh`, lido pelo
+  `seal-secrets.sh` (minikube) e pelo `publicar-segredos-aws.sh` (AWS). É o que mantém a paridade
+  tríplice do JWT e a separação da chave de serviço iguais nos dois.
+- **Nada em claro na AWS:** a credencial do Kong, que no minikube é o
+  `k8s/gateway/39-kong-jwt-credential.yaml`, vem do Secrets Manager no EKS.
+- **Valor de segredo não passa pelo Terraform**, que só cria o contêiner. No estado, ficaria em claro.
+- **Rotação:** exporte o valor novo, rode `publicar-segredos-aws.sh` e reinicie o Deployment. O
+  passo a passo está na ADR 0011.
+
 ## Credenciais semeadas (seed)
 
 O `users-api` cria um administrador na inicialização:
@@ -1009,6 +1033,7 @@ Todos em `scripts/`, todos idempotentes e seguros para rodar mais de uma vez.
 | `seal-secrets.sh` | gera os `SealedSecret` de `k8s/05-sealed-secrets.yaml` | ao trocar um segredo, ou após `minikube delete` |
 | `gen-dashboard-configmap.sh` | regenera o ConfigMap do dashboard a partir do JSON | ao editar o dashboard |
 | `terraform-init.sh` | cria o bucket de estado no S3 (se faltar) e roda `terraform init` em `terraform/` | uma vez por clone, e após reiniciar o lab |
+| `publicar-segredos-aws.sh` | grava no Secrets Manager os valores dos Secrets, da mesma fonte do `seal-secrets.sh` | depois do `terraform apply`, e para rotacionar |
 | `terraform-destroy.sh` | remove Load Balancers e volumes criados pelo Kubernetes, **depois** roda `terraform destroy` | **ao fim de cada dia de uso** da AWS |
 
 A sequência completa, num cluster do zero:
