@@ -269,6 +269,37 @@ Derrubar tudo:
 docker compose down -v
 ```
 
+## Infraestrutura na AWS (Fase 4) — Terraform
+
+O cluster gerenciado fica em [`terraform/`](terraform/): VPC, EKS com um node group, os add-ons
+(`vpc-cni` com NetworkPolicy, `kube-proxy`, `coredns`, driver EBS CSI), a StorageClass `standard` e o
+KEDA ([#62](https://github.com/fcg-grupo-16/orchestration/issues/62)). A conta é um **AWS Academy
+Learner Lab**, e os limites dele moldam o código: ver a
+[ADR 0010](docs/adr/0010-ambiente-aws-academy-e-busca-no-cluster.md).
+
+```bash
+export AWS_PROFILE=academy           # credencial de sessão do lab, válida por ~4 h
+./scripts/terraform-init.sh          # bucket de estado + terraform init
+terraform -chdir=terraform plan
+terraform -chdir=terraform apply
+aws eks update-kubeconfig --name fcg --region us-east-1
+kubectl config current-context       # tem de apontar para o EKS, NÃO para o minikube
+kubectl get nodes
+
+./scripts/terraform-destroy.sh       # AO FIM DO DIA — não é opcional
+```
+
+> ⚠️ **Três regras do laboratório que o código respeita, e que você também precisa respeitar:**
+>
+> - **Nada acima de `large`, no máximo 9 instâncias.** Tentar exceder um limite pode **desativar a
+>   conta na hora**. As variáveis de `terraform/variables.tf` recusam valores fora disso no `plan`.
+> - **Nenhuma role IAM é criada.** O cluster usa a `LabEksClusterRole` e os nós usam a `LabRole`, que
+>   o Terraform só lê. Por isso não há IRSA: os pods usam a credencial do nó.
+> - **Destrua ao fim do dia.** Fora da sessão os nós param, mas o control plane e o Load Balancer
+>   seguem cobrando, e **estourar o orçamento apaga a conta**. Use o `terraform-destroy.sh`, não o
+>   `terraform destroy` direto: o Load Balancer e os volumes são criados pelo Kubernetes e travariam a
+>   remoção da VPC.
+
 ## Deploy no Kubernetes (local)
 
 Os manifestos estão em [`k8s/`](k8s/): `Namespace`, infra (`StatefulSet`+`Service` do
@@ -968,6 +999,8 @@ Todos em `scripts/`, todos idempotentes e seguros para rodar mais de uma vez.
 | `keda-test.sh` | ciclo 0→1→0 do scale-to-zero (12 asserções) | validar o serverless |
 | `seal-secrets.sh` | gera os `SealedSecret` de `k8s/05-sealed-secrets.yaml` | ao trocar um segredo, ou após `minikube delete` |
 | `gen-dashboard-configmap.sh` | regenera o ConfigMap do dashboard a partir do JSON | ao editar o dashboard |
+| `terraform-init.sh` | cria o bucket de estado no S3 (se faltar) e roda `terraform init` em `terraform/` | uma vez por clone, e após reiniciar o lab |
+| `terraform-destroy.sh` | remove Load Balancers e volumes criados pelo Kubernetes, **depois** roda `terraform destroy` | **ao fim de cada dia de uso** da AWS |
 
 A sequência completa, num cluster do zero:
 
