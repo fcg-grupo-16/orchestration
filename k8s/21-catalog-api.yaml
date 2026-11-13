@@ -23,6 +23,11 @@ data:
   # cluster, mesmo com o Redis provisionado e a connection string injetada.
   Redis__Enabled: "true"
   Redis__InstanceName: "fcg:catalog:"
+  # Busca avançada (Fase 4, #67). OpenSearch no próprio cluster (k8s/13-infra-opensearch.yaml,
+  # ADR 0010). Endpoint interno e sem credencial: o isolamento é a NetworkPolicy de lá, por isso
+  # fica no ConfigMap e não no Secret. Endpoint AUSENTE = busca desligada e /search responde 503.
+  OpenSearch__Endpoint: "http://opensearch:9200"
+  OpenSearch__IndiceJogos: "jogos"
   # Operação atrás do Kong (issue #26). X-Forwarded-* é header que o CLIENTE controla, então a
   # confiança é restrita às redes do cluster: pods e Services do minikube. Sem isto, o Location
   # dos 201 sai com o host interno (catalog-api:8080) e os logs registram o IP do pod do gateway.

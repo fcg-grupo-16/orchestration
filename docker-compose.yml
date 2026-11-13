@@ -100,8 +100,9 @@ services:
   # Motor de busca da Fase 4 — alimenta o /search do catalog-api (catalog-api#30 e #31).
   #
   # ⚠️ AMBIENTE DE DESENVOLVIMENTO, não o desenho de produção: nó único e plugin de segurança
-  # DESLIGADO. Em produção é o OpenSearch gerenciado da AWS (orchestration#67), com TLS e
-  # autenticação. A API é a mesma nos dois, então o código do catalog-api não muda — só o endereço.
+  # DESLIGADO. No cluster roda como StatefulSet, isolado por NetworkPolicy (k8s/13-infra-opensearch.yaml,
+  # #67): o OpenSearch gerenciado da AWS é bloqueado no AWS Academy (ADR 0010). A API é a mesma, então
+  # o código do catalog-api não muda — só o endereço.
   #
   # Sem volume de propósito: o índice é DERIVADO do MongoDB (fonte da verdade) e reconstruível a
   # partir dele. `docker compose down` apaga o índice, e isso é aceitável — não há dado só aqui.
