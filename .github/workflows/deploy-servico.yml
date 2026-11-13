@@ -1,0 +1,99 @@
+name: Deploy de serviço
+
+# Workflow REUTILIZÁVEL (#68): os quatro serviços chamam este arquivo depois de publicar a imagem no
+# ECR, em vez de cada um ter uma cópia que diverge com o tempo. Atualiza o Deployment para a imagem do
+# commit, com rolling update, e verifica a saúde depois.
+#
+# Credenciais: as de SESSÃO do AWS Academy, em secrets da organização, porque o laboratório não deixa
+# criar o provedor OIDC (ADR 0010). Expiram em ~4 h e são atualizadas a cada sessão pelo
+# scripts/atualizar-credenciais-ci.sh. Quem chama passa `secrets: inherit`.
+#
+# Chamada (no CI de cada serviço):
+#   deploy:
+#     needs: publicar
+#     uses: fcg-grupo-16/orchestration/.github/workflows/deploy-servico.yml@main
+#     with: { servico: users-api, tag: "${{ github.sha }}" }
+#     secrets: inherit
+
+on:
+  workflow_call:
+    inputs:
+      servico:
+        description: "Nome do Deployment, do container e do repositório no ECR (ex.: users-api)"
+        required: true
+        type: string
+      tag:
+        description: "Tag da imagem já publicada no ECR: o SHA do commit"
+        required: true
+        type: string
+    secrets:
+      AWS_ACCESS_KEY_ID:
+        required: true
+      AWS_SECRET_ACCESS_KEY:
+        required: true
+      AWS_SESSION_TOKEN:
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  REGIAO: us-east-1
+  CLUSTER: fcg
+  NS: fcg
+
+jobs:
+  deploy:
+    name: Rolling update de ${{ inputs.servico }}
+    runs-on: ubuntu-latest
+    # Um deploy por serviço por vez, e SEM cancelar o que está em andamento: cancelar no meio de um
+    # rollout deixa o Deployment com metade dos pods em cada versão.
+    concurrency:
+      group: deploy-${{ inputs.servico }}
+      cancel-in-progress: false
+    steps:
+      - name: Credenciais da sessão do AWS Academy
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.REGIAO }}
+
+      - name: kubeconfig do EKS
+        run: aws eks update-kubeconfig --name "$CLUSTER" --region "$REGIAO"
+
+      - name: Atualiza a imagem
+        env:
+          SERVICO: ${{ inputs.servico }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          CONTA="$(aws sts get-caller-identity --query Account --output text)"
+          IMAGEM="${CONTA}.dkr.ecr.${REGIAO}.amazonaws.com/fcg/${SERVICO}:${TAG}"
+          echo "imagem: $IMAGEM"
+          kubectl -n "$NS" set image "deploy/${SERVICO}" "${SERVICO}=${IMAGEM}"
+
+      # A notifications-function fica em 0 réplica por desenho (KEDA, scale-to-zero). `rollout status`
+      # nela esperaria para sempre por um pod que corretamente não existe (regra 11 do repo). Para ela,
+      # a prova é o ScaledObject seguir Ready com o Deployment novo.
+      - name: Espera o rollout
+        env:
+          SERVICO: ${{ inputs.servico }}
+        run: |
+          if [ "$SERVICO" = "notifications-function" ]; then
+            kubectl -n "$NS" wait --for=condition=Ready scaledobject/notifications-function --timeout=120s
+          else
+            kubectl -n "$NS" rollout status "deploy/${SERVICO}" --timeout=300s
+          fi
+
+      # `rollout status` concluído NÃO prova aplicação saudável (modo de falha documentado na Fase 3).
+      # Bate no /health/ready do Service de DENTRO do cluster: é o mesmo endpoint da readinessProbe, mas
+      # passando pelo Service, como o tráfego real.
+      - name: Verificação pós-deploy
+        if: inputs.servico != 'notifications-function'
+        env:
+          SERVICO: ${{ inputs.servico }}
+        run: |
+          kubectl -n "$NS" run "verifica-${SERVICO}-${GITHUB_RUN_ID}" --rm -i --restart=Never \
+            --image=curlimages/curl:8.11.1 --command -- \
+            curl -fsS -m 10 --retry 5 --retry-delay 3 --retry-all-errors "http://${SERVICO}/health/ready"

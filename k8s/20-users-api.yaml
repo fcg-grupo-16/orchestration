@@ -35,6 +35,10 @@ data:
   ForwardedHeaders__Enabled: "true"
   ForwardedHeaders__KnownNetworks__0: "10.244.0.0/16"
   ForwardedHeaders__KnownNetworks__1: "10.96.0.0/12"
+  # EKS (#64): os pods do Kong recebem IP da VPC (terraform/rede.tf, 10.0.0.0/16), não dos CIDRs do
+  # minikube acima. Sem esta rede, atrás do gateway na AWS o Location dos 201 volta a sair com o host
+  # interno. No minikube nenhum pod usa esta faixa, então a entrada é inerte lá.
+  ForwardedHeaders__KnownNetworks__2: "10.0.0.0/16"
   ForwardedHeaders__ForwardLimit: "1"
   JwtSettings__Issuer: "FiapCloudGames"
   JwtSettings__Audience: "FiapCloudGames"

@@ -134,6 +134,14 @@ jobs:
           helm template kong kong/kong --version "$KONG_CHART_VERSION" \
             --namespace kong -f gateway/kong-values.yaml > /dev/null
           echo "gateway/kong-values.yaml renderiza sem erro no chart $KONG_CHART_VERSION"
+          # Overlay do EKS (#64): renderiza E sai com o proxy em LoadBalancer + Local. Só renderizar não
+          # basta: um erro de indentação no overlay faria o helm ignorar a chave em silêncio.
+          helm template kong kong/kong --version "$KONG_CHART_VERSION" --namespace kong \
+            -f gateway/kong-values.yaml -f gateway/kong-values-eks.yaml > kong-eks.yaml
+          grep -q 'externalTrafficPolicy: Local' kong-eks.yaml
+          grep -q 'type: LoadBalancer' kong-eks.yaml
+          grep -qE 'aws-load-balancer-type: "?nlb"?' kong-eks.yaml
+          echo "gateway/kong-values-eks.yaml renderiza o proxy como NLB com externalTrafficPolicy Local"
 
       # 7) yamllint, BLOQUEANTE. Antes rodava com `-d relaxed` + continue-on-error: acusava 441
       #    achados e saía 0 — não era gate, era ruído. A config versionada em .yamllint desliga
