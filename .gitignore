@@ -99,3 +99,11 @@ mongo-data/
 # Published output
 publish/
 out/
+
+# Terraform: estado e cache de providers nunca entram no git. O .terraform.lock.hcl ENTRA:
+# é o que fixa a versão exata dos providers para todo o grupo e o CI.
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log

@@ -97,8 +97,9 @@ que alcança o serviço de metadados da instância age como `LabRole`. Duas cons
 - **Não há menor privilégio por pod.** É uma limitação do ambiente, não uma escolha, e o relatório
   deve dizê-lo assim. O desenho de produção seria IRSA ou EKS Pod Identity, um por consumidor.
 
-🔶 Para o pod alcançar o serviço de metadados com IMDSv2, o limite de saltos do launch template dos
-nós tem de ser **2**. É o padrão do módulo `terraform-aws-modules/eks`, mas vale conferir no `plan`.
+⚠️ Para o pod alcançar o serviço de metadados com IMDSv2, o limite de saltos do launch template dos
+nós tem de ser **2**. **Não é o padrão** do módulo `terraform-aws-modules/eks` na v21, que usa 1 (só o
+nó alcança). Por isso o `terraform/eks.tf` fixa o valor explicitamente.
 
 ### 4. O ambiente é efêmero, e isso muda o hábito de trabalho
 
