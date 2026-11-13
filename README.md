@@ -88,6 +88,7 @@ flowchart TB
 | [0007](docs/adr/0007-consulta-de-contato-servico-a-servico.md) | Consulta de contato serviço-a-serviço, com chave de assinatura própria |
 | [0008](docs/adr/0008-provedor-de-nuvem-aws.md) | **Fase 4:** AWS como provedor de nuvem |
 | [0009](docs/adr/0009-servicos-de-dados-gerenciados-vs-in-cluster.md) | **Fase 4:** Mongo, RabbitMQ e Redis de idempotência ficam no cluster; o Redis de cache migra para ElastiCache se couber na cota |
+| [0010](docs/adr/0010-ambiente-aws-academy-e-busca-no-cluster.md) | **Fase 4:** AWS Academy Learner Lab; OpenSearch no cluster, CI com credenciais de sessão, roles do laboratório |
 
 ## Microsserviços
 
@@ -199,11 +200,12 @@ Sobe RabbitMQ, MongoDB, Redis, OpenSearch, a stack de observabilidade e os **3 m
 | RabbitMQ Management | <http://localhost:15672> | `kubectl -n fcg port-forward svc/rabbitmq 15672:15672` | guest / guest |
 | MongoDB | `mongodb://localhost:27017/?replicaSet=rs0` | `kubectl -n fcg port-forward svc/mongodb 27017:27017` | — |
 | Redis | `localhost:6379` | `kubectl -n fcg port-forward svc/redis 6379:6379` | — |
-| **OpenSearch** (Fase 4) | <http://localhost:9200> | — (no cluster será o domínio gerenciado, [#67](https://github.com/fcg-grupo-16/orchestration/issues/67)) | — (segurança desligada, só loopback) |
+| **OpenSearch** (Fase 4) | <http://localhost:9200> | — (no cluster será um StatefulSet, [#67](https://github.com/fcg-grupo-16/orchestration/issues/67), [ADR 0010](docs/adr/0010-ambiente-aws-academy-e-busca-no-cluster.md)) | — (segurança desligada, só loopback) |
 
 > **OpenSearch é ambiente de desenvolvimento** (Fase 4, [#74](https://github.com/fcg-grupo-16/orchestration/issues/74)):
 > nó único e plugin de segurança desligado, por isso publicado só no loopback. Serve para desenvolver
-> a busca do `catalog-api` sem depender da conta na cloud — a API é a mesma do domínio gerenciado.
+> a busca do `catalog-api` sem depender da conta na cloud, e é o modelo do OpenSearch que roda no
+> cluster ([ADR 0010](docs/adr/0010-ambiente-aws-academy-e-busca-no-cluster.md)).
 > Dois comportamentos que surpreendem:
 >
 > - **`yellow` é o estado normal**, não falha. Num nó único, todo índice criado com a réplica padrão
@@ -897,7 +899,7 @@ kubectl -n fcg exec statefulset/redis-idempotencia -- redis-cli config get maxme
 - **Busca (Fase 4):** `OpenSearch__Endpoint` e `OpenSearch__IndiceJogos` no `catalog-api`. Endpoint
   **ausente** desliga a busca — mesma convenção do `OTEL_EXPORTER_OTLP_ENDPOINT`, que mantém
   `dotnet run` funcionando sem o serviço no ar. Por isso o ConfigMap do cluster ainda **não** tem as
-  duas chaves: elas entram quando o domínio gerenciado existir ([#67](https://github.com/fcg-grupo-16/orchestration/issues/67)).
+  duas chaves: elas entram quando o OpenSearch do cluster existir ([#67](https://github.com/fcg-grupo-16/orchestration/issues/67)).
 - A **chave JWT** (`JwtSettings__SecretKey`) **deve ser idêntica** em `users-api` (emite)
   e `catalog-api` (valida).
 - **Databases (database-per-service):** `usersdb` (users-api), `catalogdb` (catalog-api) e
