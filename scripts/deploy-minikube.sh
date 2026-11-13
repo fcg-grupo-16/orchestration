@@ -279,6 +279,9 @@ kubectl -n fcg rollout status deploy/redis --timeout=180s
 # fail-closed manda a mensagem para a dead-letter — que é o comportamento desejado, e não um
 # acidente a ser evitado com espera.
 kubectl -n fcg rollout status statefulset/redis-idempotencia --timeout=180s
+# OpenSearch (#67): a JVM leva ~60 s na primeira subida, daí o timeout maior. O catalog-api NÃO
+# espera por ele (é fail-open), mas a busca só responde depois disto.
+kubectl -n fcg rollout status statefulset/opensearch --timeout=300s
 for svc in "${SERVICES[@]}"; do
   kubectl -n fcg rollout status "deploy/${svc}" --timeout=180s
 done
