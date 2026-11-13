@@ -55,3 +55,9 @@ variable "versao_chart_keda" {
   type        = string
   default     = "2.20.2"
 }
+
+variable "versao_chart_external_secrets" {
+  description = "Versão do chart do External Secrets Operator (#65). Serve a API external-secrets.io/v1."
+  type        = string
+  default     = "2.14.0"
+}
