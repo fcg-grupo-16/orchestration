@@ -19,3 +19,8 @@ output "security_group_nos" {
   description = "Security group dos nós. Serviços fora do cluster (ex.: ElastiCache, ADR 0009) devem aceitar só a partir dele."
   value       = module.eks.node_security_group_id
 }
+
+output "registry" {
+  description = "Endereço do registry. As imagens ficam em <registry>/fcg/<nome>:<sha do commit>."
+  value       = split("/", aws_ecr_repository.fcg["users-api"].repository_url)[0]
+}
