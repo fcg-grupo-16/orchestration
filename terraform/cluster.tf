@@ -24,7 +24,9 @@ resource "kubernetes_storage_class_v1" "standard" {
     encrypted = "true"
   }
 
-  depends_on = [module.eks]
+  # Os nós e o driver EBS CSI precisam existir: o KEDA e o operador rodam em pod, e a StorageClass
+  # aponta para o driver.
+  depends_on = [aws_eks_node_group.padrao, aws_eks_addon.ebs_csi]
 }
 
 # KEDA por Helm, como na Fase 3: é ele que acorda a notifications-function do zero.
@@ -36,5 +38,7 @@ resource "helm_release" "keda" {
   namespace        = "keda"
   create_namespace = true
 
-  depends_on = [module.eks]
+  # Os nós e o driver EBS CSI precisam existir: o KEDA e o operador rodam em pod, e a StorageClass
+  # aponta para o driver.
+  depends_on = [aws_eks_node_group.padrao, aws_eks_addon.ebs_csi]
 }

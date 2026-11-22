@@ -45,5 +45,7 @@ resource "helm_release" "external_secrets" {
 
   # As CRDs vêm com o chart (installCRDs: true é o padrão). A API servida é a external-secrets.io/v1;
   # a v1beta1 vem desligada nesta versão.
-  depends_on = [module.eks]
+  # Os nós e o driver EBS CSI precisam existir: o KEDA e o operador rodam em pod, e a StorageClass
+  # aponta para o driver.
+  depends_on = [aws_eks_node_group.padrao, aws_eks_addon.ebs_csi]
 }
