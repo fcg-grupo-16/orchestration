@@ -98,8 +98,16 @@ que alcança o serviço de metadados da instância age como `LabRole`. Duas cons
   deve dizê-lo assim. O desenho de produção seria IRSA ou EKS Pod Identity, um por consumidor.
 
 ⚠️ Para o pod alcançar o serviço de metadados com IMDSv2, o limite de saltos do launch template dos
-nós tem de ser **2**. **Não é o padrão** do módulo `terraform-aws-modules/eks` na v21, que usa 1 (só o
-nó alcança). Por isso o `terraform/eks.tf` fixa o valor explicitamente.
+nós tem de ser **2**. O padrão de um launch template, e o do módulo `terraform-aws-modules/eks` na
+v21, é 1 (só o nó alcança). Por isso o `terraform/eks.tf` fixa o valor explicitamente.
+
+⚠️ **Atualização (2026-11-22): o módulo `terraform-aws-modules/eks` não serve no laboratório.** Ele
+declara sempre um `data "aws_iam_session_context"`, que chama `iam:GetRole` na role de quem roda o
+Terraform (`voclabs`), e o lab nega isso com um DENY explícito (política `Pvoclabs2`). O primeiro
+`plan` contra a conta falhou ali. O `terraform/eks.tf` passou a usar os recursos diretos do provider
+(`aws_eks_cluster`, `aws_eks_node_group`, `aws_launch_template`, `aws_eks_addon`), e o admin de quem
+cria o cluster vem do próprio EKS (`bootstrap_cluster_creator_admin_permissions`), sem consulta ao
+IAM.
 
 ### 4. O ambiente é efêmero, e isso muda o hábito de trabalho
 
@@ -128,8 +136,8 @@ que reduz a pendência da [ADR 0009](0009-servicos-de-dados-gerenciados-vs-in-cl
   com os repositórios do ECR e o login do CI pelas credenciais de sessão. O critério *"publica sem
   nenhum secret de credencial no repositório"* é substituído por *"sem credencial de longa duração"*.
 - **[#62](https://github.com/fcg-grupo-16/orchestration/issues/62)** usa as roles do laboratório
-  (`create_iam_role = false`, `enable_irsa = false` no módulo), nós `t3.large` em `us-east-1`, e
-  acrescenta o access entry da role da sessão.
+  com recursos diretos do provider (sem o módulo da comunidade, ver a atualização acima), nós
+  `t3.large` em `us-east-1`, e admin para a role da sessão concedido pelo próprio EKS na criação.
 - **[#65](https://github.com/fcg-grupo-16/orchestration/issues/65)** segue com External Secrets, com
   a credencial do nó.
 - **O compose não muda.** O OpenSearch da #74 continua sendo o ambiente de desenvolvimento, e agora é
