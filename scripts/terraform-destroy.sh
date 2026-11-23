@@ -9,7 +9,18 @@
 # antes, o ELB e as ENIs dele seguram a VPC (o destroy trava em "DependencyViolation") e os volumes
 # EBS ficam cobrando, órfãos.
 #
-# Ordem: 1) Services LoadBalancer  2) PVCs (o driver CSI apaga os volumes)  3) terraform destroy.
+# Há uma terceira armadilha, medida no primeiro destroy (2026-11-22): os objetos dos OPERADORES —
+# ScaledObject e TriggerAuthentication do KEDA, ExternalSecret e ClusterSecretStore do External
+# Secrets — têm *finalizers* que só o próprio operador remove. O `terraform destroy` desinstala os dois
+# charts, o operador morre primeiro, as CRDs ficam presas esperando objetos que ninguém mais finaliza,
+# e o helm estoura o tempo ("context deadline exceeded") com o cluster e a VPC ainda de pé, cobrando.
+#
+# Ordem:
+#   1) Kong (helm uninstall): leva o Service LoadBalancer e, com ele, o NLB e as ENIs
+#   2) objetos dos operadores, COM os operadores ainda rodando para finalizá-los
+#   3) StatefulSets e PVCs (o driver CSI apaga os volumes EBS)
+#   4) namespace fcg
+#   5) terraform destroy
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -26,13 +37,26 @@ if [ -n "$CLUSTER" ] && aws eks describe-cluster --name "$CLUSTER" --region "$RE
   aws eks update-kubeconfig --name "$CLUSTER" --region "$REGIAO" --kubeconfig "$KUBECONFIG_TMP" > /dev/null
   K=(kubectl --kubeconfig "$KUBECONFIG_TMP")
 
-  echo "==> 1/3 Removendo Services do tipo LoadBalancer"
+  echo "==> 1/5 Removendo o Kong e o Load Balancer"
+  if helm --kubeconfig "$KUBECONFIG_TMP" -n kong status kong > /dev/null 2>&1; then
+    helm --kubeconfig "$KUBECONFIG_TMP" -n kong uninstall kong --wait --timeout 5m
+  fi
+  # Qualquer outro Service LoadBalancer que alguém tenha criado à mão segura a VPC do mesmo jeito.
   "${K[@]}" get svc -A -o jsonpath='{range .items[?(@.spec.type=="LoadBalancer")]}{.metadata.namespace}{" "}{.metadata.name}{"\n"}{end}' |
     while read -r ns nome; do
       [ -n "$ns" ] && "${K[@]}" -n "$ns" delete svc "$nome" --wait=true
     done
 
-  echo "==> 2/3 Removendo StatefulSets e PVCs (o driver EBS CSI apaga os volumes)"
+  echo "==> 2/5 Removendo os objetos do KEDA e do External Secrets (com os operadores vivos)"
+  for crd in scaledobjects.keda.sh triggerauthentications.keda.sh \
+             externalsecrets.external-secrets.io clustersecretstores.external-secrets.io; do
+    # Só se a CRD existe: num cluster parcial, `delete` de um tipo desconhecido aborta o script.
+    if "${K[@]}" get crd "$crd" > /dev/null 2>&1; then
+      "${K[@]}" delete "$crd" --all -A --wait=true --timeout=120s
+    fi
+  done
+
+  echo "==> 3/5 Removendo StatefulSets e PVCs (o driver EBS CSI apaga os volumes)"
   # Os StatefulSets saem PRIMEIRO. PVC em uso por pod tem o finalizer `pvc-protection` e não some
   # enquanto o pod existir; com o StatefulSet vivo, o pod volta e o delete do PVC espera para sempre.
   "${K[@]}" delete statefulset --all -A --wait=true
@@ -49,9 +73,12 @@ if [ -n "$CLUSTER" ] && aws eks describe-cluster --name "$CLUSTER" --region "$RE
     "${K[@]}" get pv >&2
     exit 1
   fi
+
+  echo "==> 4/5 Removendo o namespace da plataforma"
+  "${K[@]}" delete namespace fcg --ignore-not-found --wait=true --timeout=180s
 else
   echo "==> Cluster não encontrado; pulando a limpeza dentro do Kubernetes"
 fi
 
-echo "==> 3/3 terraform destroy"
+echo "==> 5/5 terraform destroy"
 terraform -chdir="$TF_DIR" destroy "$@"
