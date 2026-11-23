@@ -236,16 +236,28 @@ else
 
   # --- 5. Cache: o número que o vídeo precisa -------------------------------------------------------
   echo "== 5. Impacto do cache (Redis)"
-  # Tamanho de página aleatório = chave de cache que ninguém pediu ainda: a 1ª chamada é miss de
-  # verdade, sem depender de o cache estar frio.
-  TP=$((37 + RANDOM % 60))
-  T1="$(curl -s -o /dev/null -w '%{time_total}' -H "$HOSTH" -H "$AUTH" "$GW/api/v1/jogos?pagina=1&tamanhoPagina=$TP")"
-  T2="$(curl -s -o /dev/null -w '%{time_total}' -H "$HOSTH" -H "$AUTH" "$GW/api/v1/jogos?pagina=1&tamanhoPagina=$TP")"
-  MS1="$(awk -v t="$T1" 'BEGIN{printf "%.0f", t*1000}')"; MS2="$(awk -v t="$T2" 'BEGIN{printf "%.0f", t*1000}')"
-  echo "           1ª chamada (miss, vai ao Mongo): ${MS1} ms"
-  echo "           2ª chamada (hit, vem do Redis):  ${MS2} ms"
+  # Mede pelo header X-Kong-Upstream-Latency (tempo do catalog-api, visto pelo Kong), e NÃO pelo
+  # tempo total do curl. Medido em 2026-11-22 contra o EKS: do Brasil até us-east-1, a ida e volta pela
+  # internet fica em ~280 ms e ENGOLE a diferença (miss e hit saíam iguais), enquanto o upstream
+  # mostrava 10 ms → 4 ms. O tempo total também mente na primeira chamada depois de o pod subir
+  # (aquecimento da JIT e da conexão com o Mongo: 75 s medidos), por isso há um aquecimento antes.
+  upstream_ms() { curl -s -D - -o /dev/null -m 120 -H "$HOSTH" -H "$AUTH" "$1" | tr -d '\r' \
+                    | awk -F': ' 'tolower($1)=="x-kong-upstream-latency"{print $2}'; }
+  upstream_ms "$GW/api/v1/jogos?pagina=1&tamanhoPagina=10" >/dev/null   # aquecimento
+  SOMA_MISS=0; SOMA_HIT=0; N=5
+  for _ in $(seq 1 "$N"); do
+    # Tamanho de página aleatório = chave de cache que ninguém pediu: a 1ª chamada é miss de verdade.
+    TP=$((101 + RANDOM % 800))
+    M="$(upstream_ms "$GW/api/v1/jogos?pagina=1&tamanhoPagina=$TP")"
+    H="$(upstream_ms "$GW/api/v1/jogos?pagina=1&tamanhoPagina=$TP")"
+    SOMA_MISS=$((SOMA_MISS + ${M:-0})); SOMA_HIT=$((SOMA_HIT + ${H:-0}))
+  done
+  MS1=$((SOMA_MISS / N)); MS2=$((SOMA_HIT / N))
+  echo "           média de $N pares, tempo do catalog-api visto pelo Kong (X-Kong-Upstream-Latency):"
+  echo "           sem cache (miss, vai ao Mongo): ${MS1} ms"
+  echo "           com cache (hit, vem do Redis):  ${MS2} ms"
   if [ "$MS2" -lt "$MS1" ]; then ok "cache mais rápido: ${MS1} ms → ${MS2} ms"
-  else aviso "a 2ª chamada não foi mais rápida (${MS1} → ${MS2} ms): rede oscilou? rode de novo"; fi
+  else aviso "o hit não foi mais rápido (${MS1} → ${MS2} ms): catálogo pequeno demais para diferenciar? rode de novo"; fi
 fi
 
 # --- 6. Serverless -----------------------------------------------------------------------------------

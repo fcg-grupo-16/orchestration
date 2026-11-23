@@ -228,8 +228,19 @@ done
 
 # Token vai por stdin para um arquivo dentro do pod — não em --env, que o exporia no spec do Pod
 # para qualquer um com `get pods` no namespace.
+#
+# ⚠️ Com quebra de linha e `read`, e NÃO `printf '%s' | cat > /tmp/tk`. Medido no EKS (kubectl 1.37,
+# exec por websocket): quando a entrada padrão termina SEM `\n`, a sessão do exec fecha antes de o
+# `cat` gravar, e o arquivo fica VAZIO — sem erro nenhum. As requisições saem sem token, o Kong
+# responde 401 a todas, e 10a/10b reprovam parecendo contador global. No minikube passava por timing.
+# O `read` termina no `\n`, antes do fim da entrada. A checagem do tamanho falha alto se voltar.
 for P in "$POD_A" "$POD_B"; do
-  printf '%s' "$TOKEN" | kubectl -n fcg exec -i "$P" -- sh -c 'cat > /tmp/tk' >/dev/null 2>&1
+  printf '%s\n' "$TOKEN" | kubectl -n fcg exec -i "$P" -- sh -c 'read -r t; printf %s "$t" > /tmp/tk' >/dev/null 2>&1
+  TAM="$(kubectl -n fcg exec "$P" -- sh -c 'wc -c < /tmp/tk' 2>/dev/null | tr -d '[:space:]')"
+  if [ "${TAM:-0}" -ne "${#TOKEN}" ]; then
+    printf "  FALHA %-45s token chegou com %s de %s bytes no pod %s\n" "10. isolamento" "${TAM:-0}" "${#TOKEN}" "$P"
+    FALHAS=$((FALHAS+1))
+  fi
 done
 
 req() { kubectl -n fcg exec "$1" -- sh -c \
