@@ -54,6 +54,13 @@ metadata:
     app: catalog-api
 spec:
   replicas: 1
+  # Rolling update sem indisponibilidade (#68): sobe o pod novo, espera ficar Ready, e só então tira o
+  # antigo. Com 1 réplica, `maxUnavailable: 0` é o que impede derrubar o único pod saudável antes.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
   selector:
     matchLabels:
       app: catalog-api
@@ -84,6 +91,13 @@ spec:
           command: ['sh', '-c', 'until nc -z redis 6379; do echo "aguardando redis..."; sleep 2; done']
       containers:
         - name: catalog-api
+          # O pod que sai continua recebendo tráfego por alguns segundos: o Kong só tira o endpoint
+          # da lista depois que o Kubernetes o marca como terminando, e isso não é instantâneo. Sem a
+          # pausa, o SIGTERM chega antes, e as requisições nesse intervalo viram 502 no meio do deploy.
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: 10
           image: catalog-api:local
           imagePullPolicy: IfNotPresent
           ports:
