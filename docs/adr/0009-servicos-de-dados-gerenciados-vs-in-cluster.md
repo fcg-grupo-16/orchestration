@@ -1,6 +1,6 @@
 # ADR 0009 — Serviços de dados na AWS: o que migra para gerenciado e o que fica no cluster
 
-- **Status:** aceito, com **uma** pendência de custo (Redis de cache — ver "Pendente")
+- **Status:** aceito. **Desfecho na entrega da Fase 4 (2026-11-22): as quatro peças ficaram no cluster**; ver "Desfecho"
 - **Data:** 2026-11-07
 - **Issue:** [#66](https://github.com/fcg-grupo-16/orchestration/issues/66)
 - **Depende de:** [ADR 0008](0008-provedor-de-nuvem-aws.md) (AWS como provedor)
@@ -173,7 +173,19 @@ internet. 🔶 Não verificado.
 E ela entrega o que o desafio valoriza: uma peça de dados **gerenciada** na arquitetura, demonstrável
 no vídeo, ao lado do OpenSearch.
 
-## Pendente — o que esta ADR ainda não decide
+## Desfecho (2026-11-22)
+
+**O Redis de cache também ficou no cluster.** O ElastiCache é permitido no AWS Academy Learner Lab
+([ADR 0010](0010-ambiente-aws-academy-e-busca-no-cluster.md)), então o impedimento não foi a conta. Mas
+a migração não entrou na entrega da Fase 4, por prioridade: o enunciado não a exige (aceita cache em
+container), e o tempo de conta disponível foi para o cluster, o deploy contínuo e a busca. O cache
+funciona e foi medido no EKS (15–28 ms sem cache contra 4–8 ms com cache, pelo `verify-fase4.sh`).
+
+O raciocínio abaixo continua válido: é a única peça sem impedimento técnico e com rollback trivial, e é
+o primeiro passo se a plataforma ganhar um serviço de dados gerenciado. A seção "Pendente" fica como
+registro do que seria verificado.
+
+## Pendente — o que esta ADR ainda não decidia
 
 🔶 **Se o Redis de cache migra de fato depende de a conta permitir ElastiCache e do custo de um
 `cache.t4g.micro`.** Sem conta, não há número. Verificar com:
